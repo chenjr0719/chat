@@ -52,11 +52,18 @@ func peerDomain(site string) string {
 	return "site-a"
 }
 
-// Apply creates JetStream Sources on each target INBOX. Admin conn
-// drives both JS domains via NewWithDomain. The Source's Domain
-// = peer site so the gateway knows it's a remote stream.
-func Apply(ctx context.Context, specs []SourceSpec, admin *nats.Conn) error {
+// Apply creates JetStream Sources on each target INBOX. Takes a map of
+// site → admin conn (one per site) — the JS API isn't carried across the
+// supercluster gateway in our trust-chain config, so each spec is
+// applied via the conn that's local to its target site. The Source's
+// Domain = peer site lives in the stream config; NATS dials the peer
+// through the gateway at message-fetch time, which DOES traverse.
+func Apply(ctx context.Context, specs []SourceSpec, adminBySite map[string]*nats.Conn) error {
 	for _, s := range specs {
+		admin, ok := adminBySite[s.On]
+		if !ok {
+			return fmt.Errorf("federation Apply: no admin conn for site %s", s.On)
+		}
 		js, err := jetstream.NewWithDomain(admin, s.On)
 		if err != nil {
 			return fmt.Errorf("federation Apply: js context for %s: %w", s.On, err)

@@ -229,7 +229,7 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 		s.TerminateAll(context.Background())
 		return nil, fmt.Errorf("infra.Up: services (phase A): %w", err)
 	}
-	if err := waitForRoomsStreams(ctx, s.deps.natsURLBySite["site-a"], repoRoot); err != nil {
+	if err := waitForRoomsStreams(ctx, s.deps.natsURLBySite, repoRoot); err != nil {
 		s.TerminateAll(context.Background())
 		return nil, fmt.Errorf("infra.Up: wait ROOMS streams: %w", err)
 	}
@@ -257,7 +257,7 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 
 	// Step 6.5: wait for both INBOX streams, then apply federation sources.
 	federationCatalog := repoRoot + "/tools/integration-suite-multisite/catalogs/federation.yaml"
-	if err := applyFederation(ctx, s.deps.natsURLBySite["site-a"], repoRoot, federationCatalog); err != nil {
+	if err := applyFederation(ctx, s.deps.natsURLBySite, repoRoot, federationCatalog); err != nil {
 		s.TerminateAll(context.Background())
 		return nil, fmt.Errorf("infra.Up: federation: %w", err)
 	}
@@ -270,33 +270,53 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 	return s, nil
 }
 
+// openSiteAdmins opens one credentialed admin NATS conn per site so JS
+// API queries hit the LOCAL JetStream for each site. The supercluster
+// gateway carries application traffic but does not (in this trust-chain
+// config) carry the `$JS.<domain>.API` subject across sites — i.e. one
+// admin conn cannot drive both domains via NewWithDomain. The caller
+// is responsible for calling closeAdmins on the returned map.
+func openSiteAdmins(natsURLBySite map[string]string, repoRoot string) (map[string]*nats.Conn, error) {
+	credsFile := filepath.Join(repoRoot, "docker-local", "backend.creds")
+	admins := make(map[string]*nats.Conn, len(natsURLBySite))
+	for site, url := range natsURLBySite {
+		conn, err := nats.Connect(
+			url,
+			nats.Name("integration-suite/admin-"+site),
+			nats.UserCredentials(credsFile),
+		)
+		if err != nil {
+			closeAdmins(admins)
+			return nil, fmt.Errorf("admin: connect %s: %w", site, err)
+		}
+		admins[site] = conn
+	}
+	return admins, nil
+}
+
+func closeAdmins(admins map[string]*nats.Conn) {
+	for _, c := range admins {
+		_ = c.Drain()
+	}
+}
+
 // waitForRoomsStreams polls until ROOMS_site-a and ROOMS_site-b exist
 // in their respective JetStream domains. Called between phase-A service
 // boot (room-worker) and phase-B service boot (notification-worker etc.)
 // so cross-service consumer creation doesn't race the stream owner.
-//
-// The admin conn carries the backend creds because NATS is in operator
-// mode — an unauthenticated connect succeeds at TCP but JetStream API
-// calls (js.Stream) are silently denied, which would loop forever
-// against a 404-look-alike.
-func waitForRoomsStreams(ctx context.Context, natsURL, repoRoot string) error {
-	credsFile := filepath.Join(repoRoot, "docker-local", "backend.creds")
-	admin, err := nats.Connect(
-		natsURL,
-		nats.Name("integration-suite/rooms-wait-admin"),
-		nats.UserCredentials(credsFile),
-	)
+func waitForRoomsStreams(ctx context.Context, natsURLBySite map[string]string, repoRoot string) error {
+	admins, err := openSiteAdmins(natsURLBySite, repoRoot)
 	if err != nil {
-		return fmt.Errorf("rooms wait: connect nats: %w", err)
+		return fmt.Errorf("rooms wait: %w", err)
 	}
-	defer admin.Drain() //nolint:errcheck
+	defer closeAdmins(admins)
 
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	for _, site := range []string{"site-a", "site-b"} {
 		slog.Info("integration-suite: waiting for stream", "stream", "ROOMS_"+site, "domain", site)
-		if err := WaitForStream(waitCtx, admin, site, "ROOMS_"+site); err != nil {
+		if err := WaitForStream(waitCtx, admins[site], site, "ROOMS_"+site); err != nil {
 			return fmt.Errorf("rooms wait: ROOMS_%s: %w", site, err)
 		}
 		slog.Info("integration-suite: stream ready", "stream", "ROOMS_"+site)
@@ -305,25 +325,21 @@ func waitForRoomsStreams(ctx context.Context, natsURL, repoRoot string) error {
 }
 
 // applyFederation waits for INBOX streams to be created by inbox-worker
-// on both sites and then applies the federation source specs.
-func applyFederation(ctx context.Context, natsURL, repoRoot, catalogPath string) error {
-	credsFile := filepath.Join(repoRoot, "docker-local", "backend.creds")
-	admin, err := nats.Connect(
-		natsURL,
-		nats.Name("integration-suite/federation-admin"),
-		nats.UserCredentials(credsFile),
-	)
+// on both sites and then applies the federation source specs. Uses one
+// admin conn per site — see openSiteAdmins for why.
+func applyFederation(ctx context.Context, natsURLBySite map[string]string, repoRoot, catalogPath string) error {
+	admins, err := openSiteAdmins(natsURLBySite, repoRoot)
 	if err != nil {
-		return fmt.Errorf("federation: connect nats: %w", err)
+		return fmt.Errorf("federation: %w", err)
 	}
-	defer admin.Drain() //nolint:errcheck
+	defer closeAdmins(admins)
 
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	for _, site := range []string{"site-a", "site-b"} {
 		slog.Info("integration-suite: waiting for stream", "stream", "INBOX_"+site, "domain", site)
-		if err := WaitForStream(waitCtx, admin, site, "INBOX_"+site); err != nil {
+		if err := WaitForStream(waitCtx, admins[site], site, "INBOX_"+site); err != nil {
 			return fmt.Errorf("federation: wait INBOX_%s: %w", site, err)
 		}
 		slog.Info("integration-suite: stream ready", "stream", "INBOX_"+site)
@@ -333,7 +349,7 @@ func applyFederation(ctx context.Context, natsURL, repoRoot, catalogPath string)
 	if err != nil {
 		return fmt.Errorf("federation: load catalog: %w", err)
 	}
-	if err := Apply(ctx, specs, admin); err != nil {
+	if err := Apply(ctx, specs, admins); err != nil {
 		return fmt.Errorf("federation: apply: %w", err)
 	}
 	return nil
