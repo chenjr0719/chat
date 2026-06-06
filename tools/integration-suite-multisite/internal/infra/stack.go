@@ -184,38 +184,74 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 		return nil, fmt.Errorf("infra.Up: toxiproxy site proxies: %w", err)
 	}
 
-	// Step 6: services in parallel — 18 total (9 per site).
-	g2, g2ctx := errgroup.WithContext(ctx)
-	var svcMu sync.Mutex
-	for _, site := range []string{"site-a", "site-b"} {
-		site := site
-		natsURL := s.deps.natsURLBySite[site]
-		mongoURI := s.deps.mongoURIBySite[site]
-		// Services must dial Valkey via the docker network alias
-		// (valkey-<site>:6379), not the host-mapped addr returned by
-		// startValkey() — from inside a container, the host-mapped
-		// addr resolves to the container's own loopback and the
-		// connection fails. The runner-side s.deps.valkeyAddrBySite
-		// retains the host-mapped form for host-driven assertions.
-		valkeyAddr := "valkey-" + site + ":6379"
-		for _, svc := range services {
-			svc := svc
-			g2.Go(func() error {
-				svcName := svc + "-" + site
-				c, err := startService(g2ctx, nw.Name, svc, tag, site, repoRoot, authSigningKey, cfg.MessageBucketHours, natsURL, mongoURI, valkeyAddr)
-				if err != nil {
-					return fmt.Errorf("start %s: %w", svcName, err)
-				}
-				svcMu.Lock()
-				s.services[svcName] = c
-				svcMu.Unlock()
-				return nil
-			})
+	// Step 6 — phased service boot. Cross-service stream consumers
+	// race against stream owners when all 18 services start in
+	// parallel; specifically, notification-worker creates a consumer
+	// on ROOMS_<site> at startup and fails with "stream not found" if
+	// room-worker hasn't bootstrapped that stream yet. Mirrors the
+	// existing WaitForStream pattern (§6.1 step 5.5) for ROOMS.
+	bootServices := func(svcs []string) error {
+		g2, g2ctx := errgroup.WithContext(ctx)
+		var svcMu sync.Mutex
+		for _, site := range []string{"site-a", "site-b"} {
+			site := site
+			natsURL := s.deps.natsURLBySite[site]
+			mongoURI := s.deps.mongoURIBySite[site]
+			// Services dial Valkey via the docker network alias
+			// (valkey-<site>:6379), not the host-mapped addr returned
+			// by startValkey() — from inside a container the host-mapped
+			// addr resolves to its own loopback. The runner-side
+			// s.deps.valkeyAddrBySite retains host-mapped for assertions.
+			valkeyAddr := "valkey-" + site + ":6379"
+			for _, svc := range svcs {
+				svc := svc
+				g2.Go(func() error {
+					svcName := svc + "-" + site
+					c, err := startService(g2ctx, nw.Name, svc, tag, site, repoRoot, authSigningKey, cfg.MessageBucketHours, natsURL, mongoURI, valkeyAddr)
+					if err != nil {
+						return fmt.Errorf("start %s: %w", svcName, err)
+					}
+					svcMu.Lock()
+					s.services[svcName] = c
+					svcMu.Unlock()
+					return nil
+				})
+			}
+		}
+		return g2.Wait()
+	}
+
+	// Phase A — stream owners with cross-service consumers downstream.
+	// room-worker creates ROOMS_<site>; notification-worker depends on it.
+	phaseA := []string{"room-worker"}
+	if err := bootServices(phaseA); err != nil {
+		s.TerminateAll(context.Background())
+		return nil, fmt.Errorf("infra.Up: services (phase A): %w", err)
+	}
+	if err := waitForRoomsStreams(ctx, s.deps.natsURLBySite["site-a"]); err != nil {
+		s.TerminateAll(context.Background())
+		return nil, fmt.Errorf("infra.Up: wait ROOMS streams: %w", err)
+	}
+
+	// Phase B — everything else in parallel. Other consumers (e.g.
+	// broadcast-worker, message-worker) consume streams they create
+	// themselves, so they're race-free.
+	phaseB := make([]string, 0, len(services)-len(phaseA))
+	for _, svc := range services {
+		skip := false
+		for _, a := range phaseA {
+			if a == svc {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			phaseB = append(phaseB, svc)
 		}
 	}
-	if err := g2.Wait(); err != nil {
+	if err := bootServices(phaseB); err != nil {
 		s.TerminateAll(context.Background())
-		return nil, fmt.Errorf("infra.Up: services: %w", err)
+		return nil, fmt.Errorf("infra.Up: services (phase B): %w", err)
 	}
 
 	// Step 6.5: wait for both INBOX streams, then apply federation sources.
@@ -231,6 +267,26 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 		"elapsed_ms", time.Since(start).Milliseconds(),
 	)
 	return s, nil
+}
+
+// waitForRoomsStreams polls until ROOMS_site-a and ROOMS_site-b exist
+// in their respective JetStream domains. Called between phase-A service
+// boot (room-worker) and phase-B service boot (notification-worker etc.)
+// so cross-service consumer creation doesn't race the stream owner.
+func waitForRoomsStreams(ctx context.Context, natsURL string) error {
+	admin, err := nats.Connect(natsURL, nats.Name("integration-suite/rooms-wait-admin"))
+	if err != nil {
+		return fmt.Errorf("rooms wait: connect nats: %w", err)
+	}
+	defer admin.Drain() //nolint:errcheck
+
+	if err := WaitForStream(ctx, admin, "site-a", "ROOMS_site-a"); err != nil {
+		return fmt.Errorf("rooms wait: ROOMS_site-a: %w", err)
+	}
+	if err := WaitForStream(ctx, admin, "site-b", "ROOMS_site-b"); err != nil {
+		return fmt.Errorf("rooms wait: ROOMS_site-b: %w", err)
+	}
+	return nil
 }
 
 // applyFederation waits for INBOX streams to be created by inbox-worker
