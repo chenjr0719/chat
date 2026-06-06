@@ -1,13 +1,22 @@
-scenario: room-creates-federates-to-site-b
+scenario: single-site-room-create-baseline
 source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §8
 status: draft
 tag: positive
+
+# Baseline scenario: proves the multi-site infra runs a single-site
+# create-room flow end-to-end. No federation assertion. Alice (firing
+# user) creates a room and lists bob as the other member; both are
+# seeded on site-a so room-service-site-a can resolve bob locally.
+#
+# Mirrors the single-site room-service-create-room-persists-via-
+# room-worker.yaml scenario adapted to the multi-site shape.
 
 sites:
   site-a:
     seed:
       users:
         alice: { verified: true }
+        bob:   { verified: true }
 
 input:
   site: site-a
@@ -15,7 +24,7 @@ input:
   subject: chat.user.${alice.account}.request.room.site-a.create
   payload:
     name: Engineering
-    users: ["${alice.account}"]
+    users: ["${bob.account}"]
   credential: ${alice.credential}
 
 expected:
@@ -23,6 +32,7 @@ expected:
     match:
       body_json:
         status: accepted
+        roomType: channel
   - location: mongo_find
     site: site-a
     args:
@@ -31,4 +41,5 @@ expected:
         name: Engineering
     match:
       name: Engineering
-      createdBy: ${alice.id}
+      type: channel
+      siteId: site-a

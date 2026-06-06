@@ -1,0 +1,86 @@
+scenario: cross-site-seed-visibility
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §3 (sites map + per-site seed)
+status: draft
+tag: positive
+
+# Cross-site seed visibility: proves that scenarios can pre-seed the
+# same room on BOTH sites' Mongos via the YAML grammar, and that
+# mongo_find pollers correctly route by `site:` to each site.
+#
+# This does NOT exercise OUTBOX -> INBOX federation. It demonstrates
+# the per-site authoring pattern (alice on site-a, bob on site-b,
+# pre-seeded shared room on both) which is the foundation a real
+# federation test would build on once the OUTBOX/INBOX SubjectTransform
+# path is end-to-end verifiable.
+#
+# The input fires a create-room request on site-a for a DIFFERENT
+# room (Engineering2) so the assertions can distinguish "fire-created"
+# vs "seeded".
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        helper: { verified: true }
+      rooms:
+        - id: r-shared
+          name: SharedSeeded
+          type: channel
+      memberships:
+        alice: [r-shared]
+        helper: [r-shared]
+  site-b:
+    seed:
+      users:
+        bob: { verified: true }
+      rooms:
+        - id: r-shared
+          name: SharedSeeded
+          type: channel
+      memberships:
+        bob: [r-shared]
+
+input:
+  site: site-a
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.site-a.create
+  payload:
+    name: Engineering2
+    users: ["${helper.account}"]
+  credential: ${alice.credential}
+
+expected:
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+        roomType: channel
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        name: SharedSeeded
+    match:
+      name: SharedSeeded
+      type: channel
+  - location: mongo_find
+    site: site-b
+    args:
+      collection: rooms
+      filter:
+        name: SharedSeeded
+    match:
+      name: SharedSeeded
+      type: channel
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        name: Engineering2
+    match:
+      name: Engineering2
+      type: channel
+      siteId: site-a
