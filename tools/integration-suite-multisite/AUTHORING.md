@@ -1,169 +1,309 @@
-# Authoring scenarios
+# Authoring scenarios — multi-site
 
-This is the **hand-edit fallback** for integration-suite scenarios.
-The full guided workflow lives in the `/scenario-author` slash command;
-use this doc for small, targeted edits.
+This is the hand-edit guide for `tools/integration-suite-multisite/`
+scenarios. The multi-site scenario shape is fundamentally different
+from the single-site shape — read this doc before editing any YAML.
+For the YAML grammar field-by-field reference see
+[SCENARIO-REFERENCE.md](SCENARIO-REFERENCE.md).
 
-## Six hard rules
+---
+
+## Five hard rules
 
 1. **Expected behavior comes from a cited design doc — not from
    training data.** Every scenario has a `source:` line.
 
 2. **If the design is silent, STOP.** Do not invent expectations.
 
-3. **Catalog vocabulary is closed.** Verbs, matchers, readers, mishap
-   kinds, and seed-effect flags must already exist. If they don't,
-   STOP and surface the gap.
+3. **Catalog vocabulary is closed.** Verbs, readers, and seed-effect
+   flags must already exist in `catalogs/`. If a needed primitive is
+   absent, surface the gap rather than working around it.
 
-4. **One scenario per file. Cases within a scenario share a
-   sandbox.** Cases see each other's effects — that's intentional.
-   If two cases must not share state, write two scenarios.
+4. **One scenario = one fire + one expected list.** There is no
+   `cases:` array and no `base_input:`. Each scenario fires exactly
+   once and asserts one set of outcomes. If you need two independent
+   experiments, write two scenario files.
 
 5. **Scenarios always land in `drafts/`.** Promotion to `approved/`
    is a separate, human-reviewed PR.
 
-6. **Transport is implicit.** The author picks a verb name; HTTP vs
-   NATS follows from the verb (today: `nats_request` and
-   `jetstream_publish` are the only choices).
+---
 
-## Where things live
+## Mental model
 
-| Asset                        | Path                                                  |
-|------------------------------|-------------------------------------------------------|
-| Scenario drafts              | `scenarios/drafts/<name>.yaml` (flat — no subfolders) |
-| Approved scenarios (CI gate) | `scenarios/approved/` (PR promotion only)             |
-| Verbs                        | `catalogs/verbs/*.yaml`                               |
-| Matchers                     | `catalogs/matchers.yaml`                              |
-| Readers                      | `catalogs/readers/*.yaml`                             |
-| Service profiles             | `catalogs/services/*.yaml`                            |
-| Seed-effects                 | `catalogs/seed-effects/*.yaml` (closed catalog)       |
-| Mishaps                      | `catalogs/mishaps/*.yaml` (closed catalog)            |
-| Static seed (Valkey only)    | `seed/room-keys.json`                                 |
+A multi-site scenario is one hypothesis about the assembled two-site
+system. You declare the seed state you need on each site, fire one
+verb from one site, and assert what you expect to observe — possibly
+on both sites.
 
-**For the v3 YAML field-by-field reference** — anatomy, substitution
-tokens, the closed vocabularies, a worked example, common mistakes —
-see [SCENARIO-REFERENCE.md](SCENARIO-REFERENCE.md). That doc is the
-schema; this doc is the workflow.
+```
+scenario
+  sites:              per-site seed
+    site-a / site-b
+  input:              one fire (site required)
+  expected:           one assertion list
+    []expected[i]     each with site: where required
+```
 
-## Designing a scenario
+The Sandbox materializes users on each site by calling the per-site
+auth-service. It drops and re-creates collections (per site), then
+seeds rooms and Cassandra rows before firing.
 
-Three questions to answer before writing the YAML:
+---
 
-1. **What seed do my cases need?** Each scenario's sandbox starts
-   with `users`/`rooms`/`subscriptions` dropped. Declare the actors
-   you need in `seed.users` with the appropriate effect flags. For
-   verified users (the common case): `verified: true`. For negative
-   actors that should fail at NATS auth: omit `verified` (or set it
-   `false` for explicit intent).
+## Required fields in order
 
-2. **What's the case decomposition?** There is no Cartesian expansion.
-   Each case is one experiment you explicitly chose. The happy path
-   is one case; each negative variant is another case; each mishap
-   you want to test is another case. Cases run sequentially and
-   share the sandbox.
+```
+scenario:   <name>
+source:     <doc-or-file-citation>
+tag:        positive | negative
+sites:      <map>   (at least one site)
+input:      <fire>
+expected:   <list>
+```
 
-3. **Which `expected[]` blocks capture the outcome?** Cases assert
-   via Gomega streaming matchers (`Eventually` / `Consistently`).
-   The defaults (5s timeout, 100ms polling) are usually right;
-   override per-block when you need more time (slow downstream, big
-   replay) or a tighter "must not happen" window.
+`status:` is optional (default `draft`). Include it only when promoting
+to `approved` via a reviewed PR.
 
-## Mishap injection (per-case)
+---
 
-Mishaps attach to individual cases:
+## Per-site seed
+
+Declare each actor under the site where they are registered:
 
 ```yaml
-cases:
-  - name: room-creation-survives-mongo-partition
-    tag: positive
-    mishap: mongo-partition-500ms
-    expected:
-      - location: mongo_find
-        args:
-          collection: rooms
-        match:
-          name: ${input.payload.name}
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-eng
+          type: channel
+          name: Engineering
+      memberships:
+        - room: r-eng
+          user: alice
+          role: owner
+  site-b:
+    seed:
+      users:
+        bob: { verified: true }
 ```
 
-`mishap:` takes one kind from `catalogs/mishaps/`. The mishap fires
-as soon as `RunCase` starts (pre-closed trigger — there's no
-gather-and-fire boundary). `Cleanup` runs in defer on a fresh 30s
-context, so the partition heals even if the case panics or the parent
-context cancels.
+- Users on site-a can only be used in `input` and `expected` entries
+  whose `site:` is `site-a`. The `${alice.account}` token is global
+  across the scenario, but alice's JWT was minted against site-a's
+  auth-service.
+- Rooms and memberships follow the same closed enums as single-site
+  (channel/dm for type; owner/member for role).
+- If a site needs no seed, omit it from `sites:` entirely.
 
-There is no Cartesian grid; you only get the cases you write.
+---
 
-## Substitution & runtime globals
+## `cassandra_data:` at scenario top level
 
-Available in subject/payload/credential templates and per-assertion
-`match` blocks:
+Cassandra is a shared cluster. Seed rows go at the top level (not
+inside any `sites.<site>.seed`):
+
+```yaml
+cassandra_data:
+  - table: messages_by_room
+    rows:
+      - room_id: r-eng
+        created_at: ${now - 2m}
+        bucket: ${bucket(created_at)}
+        message_id: m-1
+        body_text: "hello"
+```
+
+`${now - 2m}` resolves to a Unix millisecond timestamp two minutes
+before `Sandbox.StartTime`. `${bucket(created_at)}` auto-computes the
+message-bucket partition key from the resolved `created_at` column.
+
+---
+
+## Substitution token vocabulary
+
+Available in `subject`, `payload`, `credential`, `match`, and `args`
+fields.
 
 | Token | Resolves to |
-|-------|------------|
+|-------|-------------|
 | `${<alias>.account}` | seed user's account (== alias) |
 | `${<alias>.id}` | `u-` + account |
-| `${<alias>.jwt}` | minted NATS JWT (empty unless `verified: true`) |
-| `${<alias>.nkey}` | nkey seed (empty unless `verified: true`) |
-| `${<alias>.credential}` | user-level cred shorthand |
-| `${service.<name>.credential}` | service-level creds (today: `${service.backend.credential}` from `NATS_CREDS_FILE`) |
-| `${site}` | `cfg.SiteID` (default `site-local`) |
+| `${<alias>.jwt}` | minted NATS JWT |
+| `${<alias>.nkey}` | nkey seed |
+| `${<alias>.credential}` | user-level credential shorthand |
 | `${now}` | `time.Now().UTC().UnixMilli()` |
-| `${input.subject}` | post-substitution subject (assertion-only) |
-| `${input.payload.<key>}` | post-substitution payload field (assertion-only) |
-| `${input.requestId}` | UUIDv7 X-Request-ID set by the dispatcher (assertion-only) |
-| `$auto` | runtime-generated unique value (`it-<runID>-room-auto-<N>`) |
+| `${now - 2m}` | relative offset (Cassandra seed rows) |
+| `${now + 1h}` | relative offset (positive direction) |
+| `${bucket(<col>)}` | auto-computed message-bucket value |
+| `$auto` | runtime-unique random string |
 
-Anything else `${…}` is an authoring error.
+---
 
-## How Claude and you split the work
+## Forbidden tokens
 
-When authoring with `/scenario-author`, the conversation has a
-natural division of labor:
+The loader rejects these with an explicit error:
 
-- Claude reads the code and cites sources as `file:line` in the
-  `source:` field and inline `#` comments.
-- Claude asks you when it can't find a source for a field, rather
-  than guessing. Architecture often lives in your head or in design
-  docs outside this repo.
-- When you assert something contrary to what the code shows, the
-  scenario follows your assertion (architecture wins) and Claude
-  adds a `# arch:` comment noting the divergence — so a later
-  reviewer can decide whether the code or the scenario is the bug.
+| Token | Why forbidden |
+|-------|---------------|
+| `${site}` | Ambiguous in a two-site scenario. Write the literal `site-a` or `site-b`. |
+| `${siteA}`, `${siteB}` | Same — not supported in multi-site loader. |
+| `${<alias>.site}` | Not a recognized field on seed users. |
+| `${service.*.credential}` | Service credentials are not exposed in the multi-site runner. |
 
-For hand-editing, the same stance applies: the `source:` field is the
-architecture citation; a `# arch:` comment is the right vehicle for a
-known code/architecture mismatch.
+---
 
-## Validating a hand-edit
+## Site-routing rules
 
-```bash
-make -C tools/integration-suite validate
+`site:` controls which site's connections the runner uses for the fire
+and for each assertion.
+
+| Field | `site:` required? |
+|-------|-------------------|
+| `input` | Yes — must be `site-a` or `site-b` |
+| `expected[i]` where location is `reply` | Forbidden — intrinsic to the fire site |
+| `expected[i]` where location is `cassandra_select` | Forbidden — shared cluster |
+| `expected[i]` where location is `mongo_find` | Required |
+| `expected[i]` where location is `jetstream_consume` | Required |
+| `expected[i]` where location is `nats_subscribe` | Required |
+| `expected[i]` where location is `logs_tail` | Required |
+
+Violations are caught by the loader before any container is booted.
+
+---
+
+## Worked example 1 — single-site happy path on multi-site infra
+
+File: `scenarios/drafts/room-creates-federates-to-site-b.yaml`
+
+```yaml
+scenario: room-creates-federates-to-site-b
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §8
+status: draft
+tag: positive
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+
+input:
+  site: site-a
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.site-a.create
+  payload:
+    name: Engineering
+    users: ["${alice.account}"]
+  credential: ${alice.credential}
+
+expected:
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        name: Engineering
+    match:
+      name: Engineering
+      createdBy: ${alice.id}
 ```
 
-This runs the catalog validator and the scenario loader against
-every YAML in the tree. It does NOT run scenarios — for that:
+What this tests: room creation succeeds on site-a and lands in site-a's
+Mongo. No cross-site assertion. This is the baseline — if this fails,
+something is wrong with the single-site stack, not with federation.
 
-```bash
-make -C tools/integration-suite local
-USE_INFRA=true make -C tools/integration-suite local   # boots full stack from Go
+---
+
+## Worked example 2 — federation tail
+
+File: `scenarios/drafts/room-create-federates-cross-site.yaml`
+
+```yaml
+scenario: room-create-federates-cross-site
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §8
+status: draft
+tag: positive
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+  site-b:
+    seed:
+      users:
+        bob: { verified: true }
+
+input:
+  site: site-a
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.site-a.create
+  payload:
+    name: EngineeringFederated
+    users: ["${alice.account}", "${bob.account}"]
+  credential: ${alice.credential}
+
+expected:
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        name: EngineeringFederated
+    match:
+      name: EngineeringFederated
+  - location: mongo_find
+    site: site-b
+    args:
+      collection: rooms
+      filter:
+        name: EngineeringFederated
+    match:
+      name: EngineeringFederated
+    timeout: 10s
 ```
 
-## When to escalate to `/scenario-author`
+What this tests: a room created on site-a with a site-b member
+federates to site-b's Mongo within 10 seconds. The extended timeout
+accommodates OUTBOX → INBOX propagation latency. If this assertion
+times out, see the "Federation may not fire on room create" open
+concern in `README.md`.
 
-- You are adding a NEW scenario from scratch.
-- You are unsure which verb/reader/effect/mishap to pick.
-- The behavior you want to test isn't obviously documented — the
-  command walks you through finding (or not finding) a source
-  citation.
-- You want to author multiple related scenarios (positive + negative
-  pair) in one pass.
+---
 
-For trivial fixes (typo in a `match` value, swapping a verified flag,
-renaming a case) hand-editing is fine. Run `make validate` afterwards.
+## Tips
+
+- **Scenarios are drafts by default.** Do not set `status: approved`
+  unless the scenario is going through a reviewed PR for CI promotion.
+- **One scenario = one assertion theme.** Do not bundle a happy path
+  and a negative case in the same scenario — put them in separate files.
+  The multi-site shape has no case loop; bundling would require awkward
+  setup or unsafe state sharing between scenarios.
+- **Use `$auto` for room names** that must not collide across parallel
+  or repeated runs.
+- **`timeout: 10s`** (or longer) is appropriate for cross-site
+  assertions because federation adds OUTBOX → INBOX propagation time
+  on top of normal async processing.
+- **Run validation before booting infra:**
+  `make -C tools/integration-suite-multisite validate`
+
+---
 
 ## Architecture
 
-`tools/integration-suite/ARCHITECTURE.md` explains the runtime
-model — how a scenario becomes a Sandbox + sequential cases
-asserted via Gomega. Read it once before authoring your first
-scenario.
+`tools/integration-suite-multisite/ARCHITECTURE.md` explains the
+26-container stack, NATS supercluster, federation Sources, Sandbox
+lifecycle, and the verb/reader primitive catalog. Read it once before
+authoring your first scenario.

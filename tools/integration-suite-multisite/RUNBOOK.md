@@ -1,12 +1,14 @@
-# Integration Suite — Run & Teardown Runbook
+# Integration Suite Multisite — Run & Teardown Runbook
 
 ## What it is
 
-`tools/integration-suite/` is a black-box scenario suite that runs
-the assembled chat system and asserts behavior. With `USE_INFRA=true`
-it boots its own containerized stack (NATS, Mongo, Cassandra, Valkey,
-toxiproxy + the microservices) via testcontainers — you don't manage
-infra yourself.
+`tools/integration-suite-multisite/` is a black-box scenario suite
+that runs the chat backend across a two-site NATS supercluster
+federation and asserts behavior spanning both sites. `USE_INFRA=true`
+is the only supported mode — the suite boots its own 26-container
+stack via testcontainers. There is no "manual stack" mode.
+
+---
 
 ## Prerequisites (once per machine)
 
@@ -18,10 +20,12 @@ docker ps >/dev/null && echo OK
 git fetch origin && git checkout claude/integration-test-automation-LXQHP && git pull
 
 # 3. Generate the NATS trust-chain files (operator/account keys,
-#    backend.creds, .env). Required even for USE_INFRA — the infra
-#    mounts these into the NATS + auth containers.
+#    backend.creds, .env). Required for the infra — the NATS and auth
+#    containers mount these files.
 cd docker-local && ./setup.sh && cd ..
 ```
+
+---
 
 ## Build the service images (once, and after any service code change)
 
@@ -29,118 +33,101 @@ cd docker-local && ./setup.sh && cd ..
 make build-test-images        # ~8 min cold; faster on incremental rebuilds
 ```
 
-This tags `chat-local-services-<svc>:latest`, which `infra.Up` consumes.
+This tags `chat-local-services-<svc>:latest`, which the multisite
+infra package consumes when booting the 18 service containers.
 
-## Run the suite (the main loop)
+---
 
-Two stack modes — pick based on whether you want the suite to manage
-its own infrastructure or use an already-running manual stack:
+## Run the suite
 
-```sh
-# Manual stack — assumes `make deps-up && make up` is already running.
-# Fastest startup; lets you tail container logs and inspect Mongo/Cassandra
-# state live during the run.
-make -C tools/integration-suite local
-
-# Auto-managed stack — boots its own NATS/Mongo/Cassandra/Valkey/services
-# via testcontainers (~72s to "stack ready"). CI-shape; self-cleaning.
-USE_INFRA=true make -C tools/integration-suite local
-```
-
-- Both paths run all scenarios and auto-reap (Ryuk + `TerminateAll`)
-  on exit when `USE_INFRA=true`.
-- Exit 0 = all pass; exit 1 = at least one failure.
-- Validate scenario YAML without infra: `make -C tools/integration-suite validate`
-
-## Interactive scenario dev loop (new in 4.6)
-
-For iterating on scenarios without paying the full-sweep cost every
-run. Process stays alive; connections stay warm; you pick which
-scenarios to fire from a stdin menu.
+`USE_INFRA=true` is the only supported mode. The runner boots its own
+26-container stack and tears it down on exit.
 
 ```sh
-INTERACTIVE=true make -C tools/integration-suite run
+time USE_INFRA=true make -C tools/integration-suite-multisite local
 ```
 
-- Requires the manual stack (`make deps-up && make up`) — does NOT
-  boot its own stack.
-- Drops into the menu immediately. **Nothing runs until you pick.**
-- Per-pick YAML is re-read from disk → editor saves are picked up.
-- Per-pick latency: ~150-400ms (Sandbox.Setup + execution).
-- **Reports are separated.** Interactive picks flush to
-  `docs/integration-suite/last-run-interactive.md` (env:
-  `INTERACTIVE_OUTPUT_PATH`, default `last-run-interactive.md`).
-  The canonical full-suite snapshot `last-run.md` and the CI gate
-  `last-run-approved.md` are **never** touched — they keep whatever
-  the most recent `make local` / `USE_INFRA=true make local` run
-  produced, so CI + the human "is master green?" check stay valid
-  across an interactive session.
+What happens:
 
-Menu actions:
+1. `infra.Up` boots 26 containers (2 NATS, 2 Mongo, 2 Valkey,
+   1 Cassandra, 1 Toxiproxy, 18 service replicas).
+2. Runner waits for `INBOX_site-a` and `INBOX_site-b` to exist on
+   their respective JetStream domains.
+3. Runner applies federation Sources from `catalogs/federation.yaml`:
+   `OUTBOX_site-a → INBOX_site-b` and `OUTBOX_site-b → INBOX_site-a`.
+4. Runner walks `scenarios/` and runs each scenario.
+5. Reports are written to `docs/integration-suite-multisite/`.
+6. `TerminateAll` reaps the stack on clean exit.
 
-| Input | What it does |
-|---|---|
-| `1` … `N` | Reload that scenario's YAML; run it; update result; redisplay menu |
-| `a` | Run all scenarios in sequence |
-| `f` | Run only scenarios currently showing `✗` |
-| `r` | Re-scan `scenarios/drafts/` for new files |
-| `q` or Ctrl+D | Drain connections, exit 0 |
-| `<empty ENTER>` | Repeat last action (prompt shows what — `[5]`, `[a]`, `[f]`) |
+Exit 0 = all scenarios pass. Exit 1 = at least one failure.
 
-**CI safety:** `INTERACTIVE` is purely opt-in. CI flows that don't
-set it see today's behavior bit-identically — full sweep, exit, no
-menu. The standard `make local` and `USE_INFRA=true make local`
-paths are untouched.
+---
 
-**Gotcha — don't combine with output redirects:** `INTERACTIVE=true
-make run > log.txt` will hang waiting for stdin that's been
-redirected away. If you want a logged batch run, just don't set
-`INTERACTIVE`.
+## Validate scenario YAML without booting infra
+
+```sh
+make -C tools/integration-suite-multisite validate
+```
+
+Runs the catalog validator and scenario loader against every YAML.
+Catches loader errors (forbidden tokens, missing `site:`, unknown
+effect flags) before any container is booted.
+
+---
 
 ## Read the results
 
 ```sh
-cat docs/integration-suite/last-run.md              # full report (batch / make local)
-cat docs/integration-suite/last-run-approved.md     # CI-gating subset (@status:approved)
-cat docs/integration-suite/last-run-interactive.md  # most recent INTERACTIVE session's picks
+cat docs/integration-suite-multisite/last-run.md           # full report
+cat docs/integration-suite-multisite/last-run-approved.md  # @status:approved only
 ```
 
-- **Confusion matrix** — positive (through) vs negative (rejection), pass/fail.
-- **Cases table** — per-case latest/best/worst durations.
-- **Failure Details** — exact Gomega mismatch per failing case (the "reason").
-- **performance.json** — perf history across runs.
+Report contents:
+
+- **Confusion matrix** — positive (through) vs negative (rejection),
+  pass/fail breakdown.
+- **Scenarios table** — per-scenario duration.
+- **Failure Details** — exact Gomega mismatch per failing scenario.
+- **performance.json** — latest/best/worst across runs.
+
+`@status:approved` scenarios form the CI-gating score. Drafts are
+informational.
+
+---
 
 ## Teardown
 
 Normally automatic — the run reaps its own stack on clean exit.
-Manual safety net (use if a run was killed, or you disabled Ryuk
-for debugging):
+Manual safety net (use if a run was killed or Ryuk is disabled):
 
 ```sh
-docker ps -aq | xargs -r docker rm -f      # remove leftover containers
-docker network prune -f                    # remove orphaned testcontainer networks
+docker ps -aq | xargs -r docker rm -f     # remove leftover containers
+docker network prune -f                   # remove orphaned networks
 ```
 
 ---
 
-## Gotchas worth telling the team (learned the hard way)
+## Gotchas
 
 | Gotcha | What to do |
-|---|---|
-| **RAM (~16 GB box OOMs)** | If the manual stack is up, `make deps-down` first. The two stack modes can't co-exist on memory-constrained hosts. |
-| **`make … local` (no `USE_INFRA`)** | Uses the manual stack on host ports and its preflight requires `make deps-up && make up` to be running. The two modes are mutually exclusive. |
-| **Working directory** | `setup.sh` does `cd docker-local`, which persists in a shell. Run the suite with an absolute `-C /workspaces/chat/tools/integration-suite` or from repo root. |
-| **Diagnosing service-internal failures** | The report shows the assertion reason, but for *why* a service errored you need its logs — and the stack is reaped on exit. Tap them live during the run: `docker logs -f <container>` (find it by `--filter ancestor=chat-local-services-<svc>:latest`) into a file. |
-| **Inspecting Cassandra/Mongo state** | Same — query during the ~30s scenario window before teardown (`docker exec <cassandra> cqlsh -e "…"`). |
-| **`MESSAGE_BUCKET_HOURS` must match** | Seeded Cassandra rows and the reading service must use the same bucket window, or reads silently return nothing (this bit us — Finding 20). See `docs/integration-suite-sync-register.md` §3.1 for the documented drift and §4.1 for the full register of similar config-mirror surfaces. |
-| **Scenarios are drafts** | New scenarios land in `scenarios/drafts/` (informational). Promotion to `scenarios/approved/` (the CI-gating score) is a separate human-reviewed PR. |
-| **Interactive mode + output redirect** | `INTERACTIVE=true make run > log.txt` hangs — the menu waits for stdin that's been redirected away. Use plain `make run` for logged batch runs. |
+|--------|------------|
+| **RAM** | Steady state uses 6-8 GB; peak during boot (Cassandra + 18 services starting) can spike higher. Close other memory-heavy processes. On boxes with less than 12 GB free, the stack may OOM during boot. |
+| **Cold boot time** | Cassandra is the long pole (~5-6 min on a cold machine; ~1-2 min when images are cached). The runner prints a "stack ready" message when all health checks pass. |
+| **INBOX wait** | After services boot, the runner waits for `INBOX_site-a` and `INBOX_site-b` to exist. If `inbox-worker-site-{a,b}` fails to start, this wait will block. Check the service container logs. |
+| **Federation may not fire on room create** | If the cross-site `mongo_find` assertion times out, the production code may only federate on message-send events, not on room-metadata events. This is a known hypothesis the smoke run tests — not a tool bug. See `README.md` Open Concerns. |
+| **Ryuk reaper UX** | Testcontainers reaps failed containers ~1 second after a panic. The runner's error message may appear before the container logs are captured. Set `TESTCONTAINERS_REAPER_DISABLED=true` to keep failed containers alive for post-mortem inspection. |
+| **Two infra unit tests are skipped** | `TestStartNATS_ReachableOnHostPort` and `TestStartToxiproxy_AdminReachableAndProxiesProvisioned` are `t.Skip`-ped. The gateway conf only mounts correctly with the full repo layout; the proxy-name assertions covered old single-site names. Both paths are covered by the smoke run. |
+| **Scenarios are drafts** | New scenarios land in `scenarios/drafts/` (informational). Promotion to `scenarios/approved/` is a separate human-reviewed PR. |
+| **Diagnosing service failures** | The report shows the assertion reason. For why a service errored, check its logs during the run: `docker logs -f room-service-site-a` (or `-site-b`). The stack is reaped on exit. |
+| **MESSAGE_BUCKET_HOURS must match** | Cassandra seed rows and the reading service must use the same bucket window, or reads silently return nothing. The default is 72h. |
+
+---
 
 ## One-glance "is it green?" check
 
 ```sh
-USE_INFRA=true make -C tools/integration-suite local; echo "exit=$?"
-grep -E 'pass:|fail:' docs/integration-suite/last-run.md
+time USE_INFRA=true make -C tools/integration-suite-multisite local; echo "exit=$?"
+grep -E 'pass:|fail:' docs/integration-suite-multisite/last-run.md
 docker ps -aq | wc -l    # expect 0 — confirms clean teardown
 ```
 
@@ -148,12 +135,12 @@ docker ps -aq | wc -l    # expect 0 — confirms clean teardown
 
 ## Related docs
 
-- `docs/integration-suite-sync-register.md` — every suite hardcode that
-  mirrors a production source-of-truth (CLAUDE.md, Cassandra DDL,
-  subjects, streams, log strings). Consult when an assertion fails
-  with a "MISSING" / "no events" / "exact-string mismatch" diagnostic
-  — it's often config drift, not a real regression.
-- `tools/integration-suite/README.md` — high-level overview.
-- `tools/integration-suite/ARCHITECTURE.md` — design + primitives catalog.
-- `tools/integration-suite/AUTHORING.md` — how to write new scenarios.
-- `tools/integration-suite/SCENARIO-REFERENCE.md` — YAML grammar reference.
+- `tools/integration-suite-multisite/README.md` — overview, scenarios
+  shipped, open concerns.
+- `tools/integration-suite-multisite/ARCHITECTURE.md` — 26-container
+  stack, NATS supercluster, federation Sources, Sandbox lifecycle,
+  verb/reader primitive catalog.
+- `tools/integration-suite-multisite/AUTHORING.md` — how to write
+  a new multi-site scenario.
+- `tools/integration-suite-multisite/SCENARIO-REFERENCE.md` — YAML
+  grammar reference, substitution tokens, loader errors.

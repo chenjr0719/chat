@@ -1,69 +1,146 @@
-# Architecture — integration-suite
+# Architecture — integration-suite-multisite
 
-A scenario-driven, **black-box** conformance suite for the chat
-backend. The runtime authenticates as a real user, drives the
-already-running services over the transports they actually speak,
-watches the locations where their effects land, then asserts what it
-observed via Gomega streaming matchers.
+A scenario-driven, **black-box** conformance suite for the chat backend
+running across two federated sites. The runtime authenticates as real
+users on either site, drives the already-running services over the
+transports they actually speak, watches the locations where their
+effects land (on either site), then asserts what it observed via Gomega
+streaming matchers.
 
-## 0. The model in one diagram
+This is the multi-site fork of `tools/integration-suite/`. The
+single-site tool is unchanged — see its own `ARCHITECTURE.md` for the
+single-site model.
 
-```
-SCENARIO (one YAML)
-   │
-   ▼
-┌────────── Sandbox (one per scenario) ──────────┐
-│ Setup (13 steps):                               │
-│   1.  validate seed.users[] flags vs catalog    │
-│   2.  validate seed.rooms / memberships block   │
-│   3.  validate seed.cassandra_data block        │
-│   4.  capture sb.StartTime (T_open)             │
-│   5.  Chaos.Reset()                             │
-│   6.  drop {users, rooms, subscriptions} Mongo  │
-│   7.  truncate sandbox-owned Cassandra tables   │
-│   8.  materialize SeedUsers; mint NATS creds    │
-│   9.  insert minimal user-profile docs          │
-│   10. build Placeholders for ${alias.*}         │
-│   11. insert seeded rooms/subscriptions/members │
-│   12. insert seeded Cassandra rows              │
-│   13. build PollerReg from BuiltinDeps          │
-│                                                 │
-│ For each case in declaration order:             │
-│   ├─ Chaos.Reset() (between cases)              │
-│   ├─ RunCase:                                   │
-│   │    merge case.input over base_input         │
-│   │    build sub Context (Site, Placeholders,   │
-│   │      Services)                              │
-│   │    if c.Mishap: factory → Executor          │
-│   │      go Apply(trigger pre-closed)           │
-│   │      defer Cleanup(30s ctx)                 │
-│   │    for each expected[] with Warmer poller:  │
-│   │      Warm(args) BEFORE the fire             │
-│   │    Dispatcher.Fire(verb, sub, payl, cred,   │
-│   │      tp) → reply lands in ReplyReader       │
-│   │    for each expected[]:                     │
-│   │      Eventually(poller.PollFn).             │
-│   │        Should(MatchShape(match))            │
-│   │      (or Consistently().ShouldNot for not)  │
-│   │      → fail handler captures into Verdict   │
-│   └─ recordCase → CaseReport + PerformanceStore │
-│                                                 │
-│ Teardown (via defer):                           │
-│   pollerCleanup (close JetStream consumers,     │
-│     NATS subscriptions, log tails)              │
-│   Chaos.Reset()                                 │
-└─────────────────────────────────────────────────┘
-   │
-   ▼
-RunReport / last-run.md / performance.json
-```
+---
 
-## 1. Repo layout
+## 0. The 26-container stack
 
 ```
-tools/integration-suite/
-│  Makefile                  validate / local / run / preflight
-│  README.md                 quick start + env knobs
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  Docker network: chat-local-multisite                           │
+  │                                                                 │
+  │  ┌─────────────┐   gateway   ┌─────────────┐                   │
+  │  │ nats-site-a │◄───────────►│ nats-site-b │                   │
+  │  │  4222/7222  │             │  4222/7222  │                   │
+  │  └──────┬──────┘             └──────┬──────┘                   │
+  │         │ JetStream domain=site-a   │ JetStream domain=site-b  │
+  │                                                                 │
+  │  ┌──────────────┐         ┌──────────────┐                     │
+  │  │ mongo-site-a │         │ mongo-site-b │                     │
+  │  └──────────────┘         └──────────────┘                     │
+  │                                                                 │
+  │  ┌───────────────┐        ┌───────────────┐                    │
+  │  │ valkey-site-a │        │ valkey-site-b │                    │
+  │  └───────────────┘        └───────────────┘                    │
+  │                                                                 │
+  │  ┌─────────────────────────────────────────┐                   │
+  │  │  cassandra  (shared — single cluster)   │                   │
+  │  └─────────────────────────────────────────┘                   │
+  │                                                                 │
+  │  ┌────────────────────────────────────────────────────────┐    │
+  │  │  toxiproxy (6 proxies, all programmatic)               │    │
+  │  │  MongoProxy-site-a  :27017 → mongo-site-a:27017        │    │
+  │  │  MongoProxy-site-b  :27018 → mongo-site-b:27017        │    │
+  │  │  CassandraProxy-site-a :9042 → cassandra:9042          │    │
+  │  │  CassandraProxy-site-b :9043 → cassandra:9042          │    │
+  │  │  NATSProxy-site-a   :4222 → nats-site-a:4222           │    │
+  │  │  NATSProxy-site-b   :4223 → nats-site-b:4222           │    │
+  │  └────────────────────────────────────────────────────────┘    │
+  │                                                                 │
+  │  Services (18 total, 9 per site):                               │
+  │  auth-service-{site-a,site-b}                                   │
+  │  broadcast-worker-{site-a,site-b}                               │
+  │  history-service-{site-a,site-b}                                │
+  │  inbox-worker-{site-a,site-b}                                   │
+  │  message-gatekeeper-{site-a,site-b}                             │
+  │  message-worker-{site-a,site-b}                                 │
+  │  notification-worker-{site-a,site-b}                            │
+  │  room-service-{site-a,site-b}                                   │
+  │  room-worker-{site-a,site-b}                                    │
+  └─────────────────────────────────────────────────────────────────┘
+```
+
+**Total: 26 containers** — 2 NATS + 2 Mongo + 2 Valkey + 1 Cassandra +
+1 Toxiproxy + 18 service replicas.
+
+---
+
+## 1. NATS supercluster and JetStream domains
+
+Each site runs its own NATS server. The two servers form a **NATS
+supercluster** via the gateway protocol: each server's `gateway:`
+block names the other server as a remote gateway. Both servers also
+have `jetstream:` enabled, with a distinct `domain` per site
+(`site-a` / `site-b`).
+
+Running `gateway:` and `jetstream:` together puts NATS into
+supercluster-JetStream mode, which requires `$SYS` to have an
+in-cluster transport. The gateway conf includes a **self-route** in
+the `cluster:` block — a route pointing at the server's own hostname.
+Without this, JetStream asset coordination fails during startup.
+
+The runner dials each site's NATS directly (not via Toxiproxy) using
+the `WithDomain(siteID)` JetStream option so that stream operations and
+consumers are anchored to the correct JetStream domain.
+
+---
+
+## 2. Federation via JetStream Sources
+
+After the 18 service containers are healthy, the runner:
+
+1. Waits until `INBOX_site-a` and `INBOX_site-b` exist on their
+   respective JetStream domains (created by `inbox-worker-site-a` and
+   `inbox-worker-site-b` at startup).
+2. Reads `catalogs/federation.yaml`, which declares which streams
+   source from which remote streams.
+3. Applies `UpdateStream` on each INBOX to add a `Sources` entry
+   pointing at the remote OUTBOX:
+   - `INBOX_site-a.Sources` ← `OUTBOX_site-b` (via site-b's JS domain)
+   - `INBOX_site-b.Sources` ← `OUTBOX_site-a` (via site-a's JS domain)
+
+This gives the standard Outbox/Inbox cross-site event path. Services
+publish to their local OUTBOX; the federation source pulls those
+events into the remote INBOX; remote `inbox-worker` processes them.
+
+---
+
+## 3. Toxiproxy as the chaos surface
+
+All 18 services connect to their dependencies through the single
+Toxiproxy container. The proxy list is created programmatically via
+the Toxiproxy admin API at boot — no JSON preload file.
+
+Services at `<svc>-site-a` receive:
+
+```
+MONGO_URI=mongodb://chat-local-toxiproxy:27017
+NATS_URL=nats://chat-local-toxiproxy:4222
+CASSANDRA_HOSTS=chat-local-toxiproxy:9042
+VALKEY_ADDRS=valkey-site-a:6379   (no proxy — direct)
+```
+
+Services at `<svc>-site-b` receive:
+
+```
+MONGO_URI=mongodb://chat-local-toxiproxy:27018
+NATS_URL=nats://chat-local-toxiproxy:4223
+CASSANDRA_HOSTS=chat-local-toxiproxy:9043
+VALKEY_ADDRS=valkey-site-b:6379   (no proxy — direct)
+```
+
+Per spec §5.3, **mishaps/chaos are disabled** in this phase. Toxiproxy
+boots passively in the connection path and no toxics are injected.
+Mishaps will re-enable once federation is reliably green.
+
+---
+
+## 4. Repo layout
+
+```
+tools/integration-suite-multisite/
+│  Makefile                  validate / local
+│  README.md                 quick start + open concerns
 │  ARCHITECTURE.md           this doc
 │  AUTHORING.md              authoring workflow
 │  SCENARIO-REFERENCE.md     YAML field reference
@@ -75,118 +152,134 @@ tools/integration-suite/
 │  │                         jetstream_consume, nats_subscribe,
 │  │                         logs_tail
 │  ├─ matchers.yaml          matches_shape (with ROSM array semantics)
-│  ├─ mishaps/               crash, mongo-partition-500ms,
-│  │                         cassandra-partition-500ms
-│  ├─ services/              room-service, room-worker (declared pods)
-│  └─ seed-effects/          verified.yaml — closed catalog of seed effects
+│  ├─ mishaps/               (passive — not injected in this phase)
+│  ├─ services/              declared service pods
+│  ├─ seed-effects/          verified.yaml — closed catalog
+│  └─ federation.yaml        cross-site JS Sources declarations
 │
 ├─ scenarios/
 │  ├─ drafts/                YAMLs in development
 │  └─ approved/              YAMLs gating CI (empty today)
 │
 ├─ internal/
-│  ├─ scenario/              Scenario types + loader + seed-block validators
-│  ├─ catalog/               YAML → Go (readers, mishaps, services, …)
+│  ├─ scenario/              Scenario types + loader + validators
+│  ├─ catalog/               YAML → Go (readers, services, …)
 │  ├─ verbs/                 NATSRequest, JetStreamPublish executors
 │  ├─ readers/               NATSReply, ContainerLogs, JetStreamSubject,
 │  │                         CassandraSelect, NATSSubscribe
-│  ├─ matchers/              matches_shape (Gomega-delegated ROSM
-│  │                         array branch + scalar field match)
-│  ├─ mishap/                ChaosEngine, DockerCLI, registry,
-│  │                         partition/crash factories
-│  ├─ infra/                 Programmatic Docker stack (USE_INFRA=true)
+│  ├─ matchers/              matches_shape (Gomega-delegated ROSM)
+│  ├─ mishap/                (passive — wiring present, no injection)
+│  ├─ infra/                 Programmatic 26-container stack
 │  ├─ seedeffect/            Effect interface, VerifiedEffect, Registry
-│  ├─ fixtures/              MintCredentials only (VerifiedEffect consumes)
+│  ├─ fixtures/              MintCredentials (VerifiedEffect consumes)
 │  └─ runtime/
-│     ├─ sandbox.go          per-scenario shared state
-│     ├─ case_runner.go      RunCase + mishap injection + Warmer pre-fire
-│     ├─ runner_scenario.go  per-scenario loop (Setup → cases → Teardown)
+│     ├─ sandbox.go          per-scenario shared state (two sites)
+│     ├─ runner_scenario.go  per-scenario loop (Setup → fire → assert)
 │     ├─ runner.go           Run() — startup wiring + scenario walk
-│     ├─ menu.go             INTERACTIVE=true stdin-driven menu
-│     ├─ pollers/            Poller interface, six universal poller
-│     │                      implementations + Warmer abstraction
+│     ├─ pollers/            Poller interface, six universal pollers
 │     ├─ matchshape.go       MatchShape Gomega OmegaMatcher
 │     ├─ dispatcher.go       Dispatcher.Fire(InputSpec, ctx, cred, tp)
-│     ├─ substitute.go       ${alias.*} / ${site} / ${now} / ${input.*}
+│     ├─ substitute.go       ${alias.*} / ${now} / ${input.*}
 │     ├─ tracing.go          NewTraceparent
-│     ├─ reporter.go         CaseReport, RunReport, Verdict, Render
-│     ├─ runner_report.go    recordCase + recordSkipped + statusFor
-│     ├─ performance.go      PerformanceStore (latest/best/worst)
-│     └─ perf_merge.go       cmd/perfmerge helper
+│     ├─ reporter.go         ScenarioReport, RunReport, Verdict, Render
+│     ├─ runner_report.go    recordScenario + statusFor
+│     └─ performance.go      PerformanceStore (latest/best/worst)
 │
 ├─ cmd/
 │  ├─ runner/                main test runner
-│  ├─ validator/             catalog + scenario static validation
-│  └─ perfmerge/             merge performance.json from CI artifacts
+│  └─ validator/             catalog + scenario static validation
 │
 └─ seed/
-   ├─ room-keys.json         pre-seeded Valkey roomIDs (room-worker carryover)
-   └─ loader.go              LoadRoomKeys only
+   └─ loader.go              shared seed utilities
 ```
 
-## 2. The Sandbox lifecycle in detail
+---
 
-### 2.1 Setup (`Sandbox.Setup`)
+## 5. The Sandbox lifecycle
 
-Thirteen steps (see header comment on `Sandbox.Setup`). The ordering
-matters in three places:
+### 5.1 Setup (`Sandbox.Setup`)
 
-- **Validation precedes I/O** (steps 1-3): Unknown true-valued flags or
-  malformed seed blocks abort the scenario before any side-effect.
-- **`StartTime` precedes data writes** (step 4 before steps 11-12):
-  Seeded `createdAt` values and the poller filter boundary share the
-  same anchor.
-- **`Placeholders` precedes seeded inserts** (step 10 before 11-12):
-  The Cassandra-seed engine substitutes `${alice.id}` etc.; the room
-  inserter gains the same capability transparently.
+Setup runs once per scenario. For each site declared in `sites:`,
+the sandbox:
 
-### 2.2 Case loop (`runScenario`)
+1. **Validates** the seed block (effect flags, room/membership shapes,
+   Cassandra table/column names). Unknown flags abort before any I/O.
+2. **Captures `StartTime`** (T_open) — poller filter boundaries and
+   seeded `createdAt` values share this anchor.
+3. **Drops collections** (`users`, `rooms`, `subscriptions`) in the
+   site's Mongo database.
+4. **Truncates** Cassandra tables owned by the sandbox (shared cluster,
+   so both sites' seeds operate against the same keyspace).
+5. **Materializes SeedUsers**: calls the per-site auth-service
+   (`SITE_A_AUTH_SERVICE_URL` / `SITE_B_AUTH_SERVICE_URL`) to mint
+   NATS JWTs; builds `Placeholders` for `${alias.*}` substitutions.
+6. **Inserts user-profile docs** in the site's Mongo.
+7. **Inserts seeded rooms / subscriptions / memberships** in the site's
+   Mongo.
+8. **Inserts seeded Cassandra rows** (shared cluster, partitioned by
+   room_id + bucket computed via `${bucket(<col>)}`).
+9. **Builds `PollerReg`** from `BuiltinDeps{SiteA, SiteB}`.
 
-For each `c` in `s.Cases`:
+The ordering rule: validation before I/O; `StartTime` before writes;
+`Placeholders` before inserts (so `${alice.id}` resolves in Cassandra
+seed rows and room inserts alike).
 
-1. **Between-case Chaos.Reset** clears any partition the previous
-   case left behind. Failure here records the case as "skipped" and
-   continues to the next.
-2. **`RunCase(ctx, sb, &c)`** does the case:
-   - Shallow-merge `c.Input` over `base_input` → `InputSpec`.
-   - Build sub `Context{Site, Placeholders, Services}`.
-   - If `c.Mishap != ""`: lookup `FactoryByKind[c.Mishap]` →
-     `MishapRegistry.GetFactory` → build Executor. Spawn `Apply` in a
-     goroutine against a **pre-closed trigger** (each case is its own
-     fire point). Defer `Cleanup` on a fresh 30s context.
-   - Resolve credential via `pickCredential` (handles
-     `${alias.credential}` and `${service.<name>.credential}`).
-   - **Warmer pre-fire**: walk `expected[]`; for each poller that
-     implements `Warmer`, call `Warm(args)` BEFORE the verb fires.
-     This is the architectural pivot for Core NATS — `nats_subscribe`
-     has no replay, so the subscription must open first.
-   - `Dispatcher.Fire` substitutes subject + payload, runs the verb,
-     pushes reply into `ReplyReader.Inject` so the `reply` poller's
-     buffer sees it.
-   - For each `expected[]`:
-     - Look up the poller; substitute `match` and `args` against `sub`;
-     - `g.Eventually(pollFn, timeout, polling).Should(MatchShape(match, reg))`
-       (or `Consistently…ShouldNot…` for `not: true`).
-     - Check `ca.failed` — break on first failure.
-   - Build `CaseVerdict` from the captured failure messages.
-3. **`recordCase`** appends a `CaseReport` to `report.Cases` and runs
-   `perf.RecordExecuted("<scenario>/<case-name>", latest)`. The
-   confusion-matrix logic in `reporter.go` picks up the new rows
-   without any case-runner-specific coupling.
+### 5.2 Fire + assert (`runScenario`)
 
-### 2.3 Teardown (`defer Sandbox.Teardown`)
+There is **no case loop** — each scenario has exactly one input and one
+expected list.
 
-- Close every stateful poller's resources via the cleanup func
+1. **Dispatch**: substitute `input.subject`, `input.payload`, and
+   `input.credential`; route to the site named in `input.site`;
+   `Dispatcher.Fire(verb, sub, payload, cred, tp)`. For
+   `nats_request` the synchronous reply is injected into the
+   `ReplyReader` buffer.
+2. **Warmer pre-fire**: walk `expected[]`; for each poller that
+   implements `Warmer` (notably `nats_subscribe`), call `Warm(args)`
+   before the verb fires. Core NATS has no replay — the subscription
+   must open first.
+3. **Assert**: for each `expected[]` entry:
+   - Look up the poller; substitute `match` and `args`.
+   - Pick the right site connection based on `expected[i].site`.
+   - `g.Eventually(pollFn, timeout, polling).Should(MatchShape(match, reg))`
+     (or `Consistently…ShouldNot…` for `not: true`).
+   - Break on first failure; capture mismatch reason into `Verdict`.
+4. **`recordScenario`** appends a `ScenarioReport` to `report.Scenarios`
+   and runs `perf.RecordExecuted("<scenario>", latest)`.
+
+### 5.3 Teardown (`defer Sandbox.Teardown`)
+
+- Close every stateful poller's resources via the cleanup func that
   `RegisterBuiltinPollers` returned: JetStream ephemeral consumers,
-  Core NATS subscriptions, container log tails, the dispatcher-fed
-  reply stream poller.
-- `Chaos.Reset` one more time so the next scenario starts clean.
+  Core NATS subscriptions, container log tails.
 - Both wrapped in `sync.Once` so a panic + manual call don't
   double-fire.
 
-## 3. The streaming assertion model
+---
 
-### 3.1 Poller interface
+## 6. The verb/reader primitive catalog
+
+The runtime ships six universal data-source primitives. Each is
+application-agnostic — all subject names, table names, collection
+names, and container names live in scenario YAML.
+
+| Location           | Args                          | Site routing                              |
+|--------------------|-------------------------------|-------------------------------------------|
+| `reply`            | (none)                        | intrinsic — bound to `input.site`         |
+| `mongo_find`       | `collection`, `filter`        | required `site:` on `expected[i]`         |
+| `cassandra_select` | `query`, `params?`            | forbidden — shared cluster                |
+| `jetstream_consume`| `stream`, `filter_subject`    | required `site:` on `expected[i]`         |
+| `nats_subscribe`   | `subject`                     | required `site:` on `expected[i]`         |
+| `logs_tail`        | `container`, `service?`       | required `site:` — resolves `<svc>-<site>`|
+
+**Site values:** exactly `site-a` or `site-b`. Any other value is a
+loader error.
+
+---
+
+## 7. The streaming assertion model
+
+### 7.1 Poller interface
 
 ```go
 type Poller interface {
@@ -198,14 +291,11 @@ type Warmer interface {
 }
 ```
 
-Universal primitives accept `args` per-assertion — the runtime is
-**100% application-agnostic**, all subject names / table names /
-collection names live in scenario YAML. Stateful primitives
-(`jetstream_consume`, `logs_tail`, `nats_subscribe`) cache the
-underlying machinery keyed by args identity so multiple assertions
-against the same source share one consumer/subscription/tail.
+Stateful primitives (`jetstream_consume`, `logs_tail`, `nats_subscribe`)
+cache the underlying machinery keyed by args identity, so multiple
+assertions against the same source share one consumer/subscription/tail.
 
-### 3.2 MatchShape
+### 7.2 MatchShape
 
 ```go
 g.Eventually(poller.PollFn(args, tp), 5*time.Second, 100*time.Millisecond).
@@ -215,63 +305,99 @@ g.Eventually(poller.PollFn(args, tp), 5*time.Second, 100*time.Millisecond).
 `MatchShape` is a Gomega `OmegaMatcher` that succeeds iff at least one
 event in the polled `[]readers.Event` has a `Payload` satisfying the
 expected shape under `matchers.MatchesShape` (subset deep match with
-type-normalizing compare). The array branch implements **Relative
-Order Subset Match (ROSM)**: when the expected match is a list, the
-matcher delegates to `gstruct.MatchKeys` and walks the observed
-slice looking for each expected element in declaration order. On
-failure, `FailureMessage` surfaces the closest-event mismatch reason.
+type-normalizing compare). The array branch implements **Relative Order
+Subset Match (ROSM)**: when the expected match is a list, the matcher
+walks the observed slice looking for each expected element in declaration
+order. On failure, `FailureMessage` surfaces the closest-event mismatch
+reason.
 
-### 3.3 NewGomega(failHandler)
+### 7.3 NewGomega(failHandler)
 
-`gomega.NewGomega(ca.Handler())` wires Gomega's matcher protocol to a
-per-case `caseAssertion` sink. The handler records the failure
-message and lets the goroutine continue — unlike Ginkgo's default
-which `runtime.Goexit()`. The case loop checks `ca.failed` after each
-`Eventually`/`Consistently` and breaks on the first failure. Verdict
-captures the joined messages.
+`gomega.NewGomega(sa.Handler())` wires Gomega's matcher protocol to a
+per-scenario `scenarioAssertion` sink. The handler records the failure
+message and lets the goroutine continue — unlike Ginkgo's default which
+calls `runtime.Goexit()`. The assertion loop checks `sa.failed` after
+each `Eventually`/`Consistently` and breaks on the first failure.
+`Verdict` captures the joined messages.
 
-## 4. Reporting
+---
 
-`recordCase` writes:
+## 8. Reporting
 
-- `CaseReport{ScenarioName, Subset:"case", Status, Kind, Duration,
-  Verdict}` into `report.Cases`. `reporter.go:render` walks `Cases`,
-  bins by Kind ("positive" / "negative") × Outcome to render the
-  confusion matrix.
-- `perf.RecordExecuted("<scenario>/<case-name>", latest)`.
+`recordScenario` writes:
 
-`last-run.md` rendering, the approved-only filter, git heading, and
-best/worst tracking are independent of the case-runner.
+- `ScenarioReport{ScenarioName, Status, Tag, Duration, Verdict}` into
+  `report.Scenarios`. `reporter.go:render` bins by `Tag` ("positive" /
+  "negative") × Outcome to render the confusion matrix.
+- `perf.RecordExecuted("<scenario>", latest)`.
 
-## 5. The chaos engine
+Report paths (relative to repo root):
 
-The `internal/mishap` package owns Docker + Toxiproxy primitives:
+```
+docs/integration-suite-multisite/last-run.md
+docs/integration-suite-multisite/last-run-approved.md
+docs/integration-suite-multisite/last-run-interactive.md
+docs/integration-suite-multisite/performance.json
+```
 
-- `ChaosEngine` is the single facade — `Reset()` clears every
-  partition; `WithPartition(target, duration, fn)` is the partition
-  primitive a factory composes.
-- `DockerCLI` wraps `docker restart`/`docker exec` for the `crash`
-  kind.
-- `registry.go` is a factory-by-kind map. Each case names the kind in
-  YAML; `RunCase` looks up the factory at fire time.
-- Factories are pure constructors — given `FactoryContext{ChaosEngine,
-  DockerCLI, Pod, Duration}`, return an `Executor{Apply, Cleanup}`.
-  Cleanup always runs even when Apply panics.
+`@status:approved` scenarios form the CI-gating score. Drafts are
+informational.
 
-## 6. INTERACTIVE mode
+---
 
-`INTERACTIVE=true` flips the runner from a batch sweep into a stdin
-menu. Scenarios are listed with status glyphs; the user picks which
-to fire. Per-pick the YAML is re-read from disk so editor saves are
-picked up between runs.
+## 9. Runner-side environment
 
-| Input | Action |
-|-------|--------|
-| `1` … `N` | Run that scenario |
-| `a` | Run all in order |
-| `f` | Run only `✗` (failing) scenarios |
-| `r` | Re-scan `scenarios/drafts/` for new files |
-| `q` / Ctrl+D | Drain connections, exit 0 |
-| `<empty ENTER>` | Repeat last action |
+When `USE_INFRA=true` (the only supported mode), the runner calls
+`infra.Up`, which:
 
-CI is bit-identical to today when `INTERACTIVE` is unset.
+1. Boots all 26 containers.
+2. Returns a `Config{SiteA, SiteB}` with per-site URLs.
+
+The runner dials resources **directly** via host-mapped ports — not
+through Toxiproxy, because the runner process cannot resolve container
+aliases. Per-site env vars:
+
+```
+SITE_A_NATS_URL
+SITE_A_MONGO_URI
+SITE_A_AUTH_SERVICE_URL
+SITE_B_NATS_URL
+SITE_B_MONGO_URI
+SITE_B_AUTH_SERVICE_URL
+```
+
+---
+
+## 10. Locked design decisions
+
+Five decisions were locked during the design phase
+(`docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md`):
+
+**One input, one expected list.** The case-loop model from single-site
+was dropped. A multi-site scenario is one fire across a federation
+boundary and one set of assertions. Bundling multiple cases in a single
+scenario would make it harder to attribute failures to individual
+hypotheses; write separate scenarios for independent assertions.
+
+**`site:` is required on inputs and site-scoped expected entries.**
+The loader rejects scenarios that omit `site:` on `input`, on
+`mongo_find`/`jetstream_consume`/`nats_subscribe`/`logs_tail` expected
+entries, and scenarios that include `site:` on `reply` or
+`cassandra_select` entries. This is enforced at load time, not at
+runtime, so authoring errors surface before any container is booted.
+
+**Seed is nested under `sites.<site>.seed`.** Top-level `seed:` is
+forbidden. Users, rooms, and memberships are declared per-site so the
+Sandbox can issue auth calls and Mongo writes to the correct site.
+Cassandra data is at scenario top level because Cassandra is a shared
+cluster.
+
+**USE_INFRA=true is the only supported mode.** A two-site stack is
+impractical to run by hand for ad-hoc development. The infra package
+owns all 26 containers and their wiring.
+
+**Mishaps deferred to a follow-up phase.** Per spec §5.3, Toxiproxy
+proxies are in the connection path but no toxics are injected until
+federation is reliably green. The `mishap/` package and Toxiproxy
+wiring remain in the codebase so they can be re-enabled without
+structural changes.
