@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -88,18 +89,31 @@ func (m *shapeMatcher) Match(actual any) (bool, error) {
 }
 
 func (m *shapeMatcher) FailureMessage(actual any) string {
+	// Three labeled sections — tool framing, system's raw reply,
+	// tool's mismatch reason — kept distinct so the operator can
+	// read the system's response verbatim without it being woven
+	// into the tool's prose.
 	var b strings.Builder
-	fmt.Fprintf(&b, "MatchShape: polled %d events, none matched expected shape %v", m.lastEventCount, m.expected)
-	if m.bestReason != "" {
-		fmt.Fprintf(&b, "; closest mismatch: %s", m.bestReason)
+	b.WriteString("MatchShape failed.\n")
+	if raw, err := json.Marshal(m.expected); err == nil {
+		fmt.Fprintf(&b, "  expected:          %s\n", raw)
+	} else {
+		fmt.Fprintf(&b, "  expected:          %#v\n", m.expected)
 	}
-	// Print the closest event's actual payload so a "field X missing"
-	// reason can be reconciled against what was actually polled. Without
-	// this, the operator can't distinguish e.g. an Error envelope, a
-	// nats.ErrNoResponders timeout shape, or a service error reply.
 	if events, ok := actual.([]readers.Event); ok && m.bestIdx >= 0 && m.bestIdx < len(events) {
-		fmt.Fprintf(&b, "; got payload: %v", events[m.bestIdx].Payload)
+		ev := events[m.bestIdx]
+		if raw, err := json.Marshal(ev.Payload); err == nil {
+			fmt.Fprintf(&b, "  reply from system: %s\n", raw)
+		} else {
+			fmt.Fprintf(&b, "  reply from system: %#v\n", ev.Payload)
+		}
+	} else {
+		fmt.Fprintf(&b, "  reply from system: (no events polled)\n")
 	}
+	if m.bestReason != "" {
+		fmt.Fprintf(&b, "  mismatch reason:   %s\n", m.bestReason)
+	}
+	fmt.Fprintf(&b, "  events polled:     %d", m.lastEventCount)
 	return b.String()
 }
 

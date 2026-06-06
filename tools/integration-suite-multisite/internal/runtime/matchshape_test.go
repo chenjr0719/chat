@@ -28,7 +28,7 @@ func TestMatchShape_ZeroEventsFailsWithPolledZero(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 	msg := m.FailureMessage([]readers.Event{})
-	assert.Contains(t, msg, "polled 0 events")
+	assert.Contains(t, msg, "events polled:     0")
 }
 
 func TestMatchShape_MultipleEventsOneMatches(t *testing.T) {
@@ -55,10 +55,13 @@ func TestMatchShape_MultipleEventsNoneMatchFailureNamesClosest(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 	msg := m.FailureMessage(events)
-	assert.Contains(t, msg, "polled 2 events")
+	assert.Contains(t, msg, "events polled:     2")
 	// Must surface at least one of the mismatch reasons so the operator
 	// can triage which assertion failed.
 	assert.Contains(t, msg, "status")
+	// And must surface the actual reply payload verbatim, separate from
+	// the tool's framing.
+	assert.Contains(t, msg, "reply from system:")
 }
 
 func TestMatchShape_NilRegistryFallsBackToBuiltins(t *testing.T) {
