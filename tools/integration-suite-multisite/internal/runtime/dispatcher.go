@@ -19,10 +19,11 @@ type Dispatcher struct {
 	ReplyRdr *readers.NATSReplyReader
 }
 
-// InputSpec is the post-merge, pre-substitution shape RunCase hands
-// the dispatcher. the runner builds this from the scenario's base_input
-// shallow-merged with the case's input override.
+// InputSpec is the post-substitution shape the runner hands the
+// dispatcher. Site routes the verb to the correct per-site backend
+// (per spec §1 row 5 — explicit site on input).
 type InputSpec struct {
+	Site    string
 	Verb    string
 	Subject string
 	Payload map[string]any
@@ -63,6 +64,7 @@ func (d *Dispatcher) Fire(ctx context.Context, in *InputSpec, subCtx *Context, c
 
 	fireMoment := time.Now()
 	out := executor.Execute(ctx, &verbs.Input{
+		Site:        in.Site,
 		Subject:     subject,
 		Payload:     payloadBytes,
 		Credential:  cred,

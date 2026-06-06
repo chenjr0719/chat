@@ -172,6 +172,7 @@ func runScenario(ctx context.Context, s *scenario.Scenario, deps *runnerDeps) er
 	}
 
 	inSpec := &InputSpec{
+		Site:    s.Input.Site,
 		Verb:    s.Input.Verb,
 		Subject: s.Input.Subject,
 		Payload: s.Input.Payload,
