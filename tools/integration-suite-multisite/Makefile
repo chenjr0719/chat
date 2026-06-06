@@ -1,6 +1,6 @@
 TOOL_DIR  := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT := $(abspath $(TOOL_DIR)/../..)
-REPORT_PATH := $(REPO_ROOT)/docs/integration-suite/last-run.md
+REPORT_PATH := $(REPO_ROOT)/docs/integration-suite-multisite/last-run.md
 
 NATS_CONTAINER := chat-local-nats
 
@@ -41,9 +41,9 @@ local: $(LOCAL_DEPS)
 		VALKEY_ADDR=localhost:6379 \
 		SITE_ID=site-local \
 		OUTPUT_PATH=$(REPORT_PATH) \
-		APPROVED_OUTPUT_PATH=$(REPO_ROOT)/docs/integration-suite/last-run-approved.md \
-		INTERACTIVE_OUTPUT_PATH=$(REPO_ROOT)/docs/integration-suite/last-run-interactive.md \
-		PERFORMANCE_PATH=$(REPO_ROOT)/docs/integration-suite/performance.json \
+		APPROVED_OUTPUT_PATH=$(REPO_ROOT)/docs/integration-suite-multisite/last-run-approved.md \
+		INTERACTIVE_OUTPUT_PATH=$(REPO_ROOT)/docs/integration-suite-multisite/last-run-interactive.md \
+		PERFORMANCE_PATH=$(REPO_ROOT)/docs/integration-suite-multisite/performance.json \
 		REPO_ROOT=$(REPO_ROOT) \
 		go run ./cmd/runner
 
