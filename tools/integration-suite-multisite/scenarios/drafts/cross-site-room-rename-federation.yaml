@@ -1,29 +1,34 @@
 scenario: cross-site-room-rename-federation
-source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §1 row 1 + room-service/handler.go:139 (room.rename) + room-worker outbox emits + inbox-worker/handler.go:52 (metadata-only federation)
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §1 row 1 + room-service/handler.go (room.rename) + room-worker outbox emits + inbox-worker/handler.go:52 (metadata-only federation)
 status: draft
 tag: positive
 
-# Real federation test, rewritten after Run 29 surfaced the misread:
-# production federates METADATA only — memberships, subscriptions,
-# room state — never message bodies. The previous version fired a
-# message.send and expected an outbox event that production never
-# emits.
+# Cross-site federation tail — alice (site-a, owner) renames a room
+# whose subscribers include bob on site-b. room-worker-site-a iterates
+# the room's site-a subscriptions, looks up each subscriber's user
+# record on site-a's `users` collection to find their `siteId`, and
+# publishes outbox.site-a.to.site-b.room_renamed for any remote
+# subscriber. Federation Sources land that event in INBOX_site-b.
 #
-# This version fires a room.rename, which DOES publish to OUTBOX_site-a
-# under outbox.site-a.to.site-b.room_renamed when the room has a
-# site-b subscriber. Federation Sources land it on INBOX_site-b.
+# This scenario exercises three multi-site grammar features:
+#   1. per-site seed.users (alice on site-a, bob on site-b)
+#   2. per-site seed.rooms + seed.memberships (r-shared on both)
+#   3. seed.remote_users — bob is projected into site-a's `users`
+#      collection with siteId=site-b so production code on site-a
+#      can classify him as a remote subscriber.
 #
-# Pre-seed pattern: same room (r-shared) materialised on both sites
-# with alice subscribed on site-a and bob subscribed on site-b. The
-# per-site memberships in the YAML are what make room-worker-site-a
-# recognise that bob lives on site-b when it iterates the room's
-# subscribers — that's the trigger for the cross-site outbox publish.
+# Authors writing future cross-site federation tests follow the
+# same pattern: project the cross-site identities they need on the
+# acting site, list them in that site's memberships, fire the verb.
 
 sites:
   site-a:
     seed:
       users:
         alice: { verified: true }
+      remote_users:
+        bob:
+          home_site: site-b
       rooms:
         - id: r-shared
           name: SharedChannel
@@ -32,6 +37,8 @@ sites:
         alice:
           - room: r-shared
             roles: [owner]
+        bob:
+          - room: r-shared
   site-b:
     seed:
       users:
@@ -46,13 +53,13 @@ sites:
 input:
   site: site-a
   verb: nats_request
-  # Rename subject pattern from pkg/subject:84 —
+  # Rename subject pattern from pkg/subject —
   # chat.user.<account>.request.room.<roomID>.<siteID>.room.rename
   subject: chat.user.${alice.account}.request.room.r-shared.site-a.room.rename
   payload:
-    # Body shape from room-service/handler.go handleRoomRename — only
-    # newName is in the wire body; roomID and account come from the
-    # subject (the authoritative identity).
+    # Body shape from room-service handleRoomRename — only newName is
+    # in the wire body; roomID and account come from the subject (the
+    # authoritative identity).
     newName: SharedChannelRenamed
   credential: ${alice.credential}
 
@@ -64,8 +71,9 @@ expected:
         status: accepted
 
   # Surface 2 — federation tail. room-worker-site-a publishes
-  # outbox.site-a.to.site-b.room_renamed when the room has a
-  # site-b subscriber. The Source on INBOX_site-b
+  # outbox.site-a.to.site-b.room_renamed because bob (now visible in
+  # site-a's `users` with siteId=site-b via the remote_users projection)
+  # is a subscriber. The Source on INBOX_site-b
   # (catalogs/federation.yaml) sources OUTBOX_site-a with filter
   # outbox.site-a.to.site-b.> — the rename event arrives here.
   - location: jetstream_consume

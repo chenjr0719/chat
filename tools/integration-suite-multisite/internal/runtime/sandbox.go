@@ -235,10 +235,9 @@ func (sb *Sandbox) Setup(ctx context.Context) error {
 
 		for alias, flags := range siteBlock.Seed.Users {
 			u := &seedeffect.SeedUser{
-				Alias:    alias,
-				Account:  alias,
-				ID:       "u-" + alias,
-				HomeSite: siteName,
+				Alias:   alias,
+				Account: alias,
+				ID:      "u-" + alias,
 			}
 
 			// Mint a NATS identity. AuthURL empty is surfaced loudly so the
@@ -273,15 +272,20 @@ func (sb *Sandbox) Setup(ctx context.Context) error {
 	}
 
 	// Step 9: insert minimal user-profile docs per site.
+	// Two passes per site:
+	//   (a) local users — declared in seed.users, profile siteId = this site.
+	//   (b) remote-user stubs — declared in seed.remote_users with an
+	//       explicit home_site; profile siteId = the home_site value.
+	// The author is explicit about both; the engine never infers a stub.
 	for siteName, siteBlock := range sb.Scenario.Sites {
 		db, ok := sb.Deps.MongoBySite[siteName]
 		if !ok || db == nil {
-			if len(siteBlock.Seed.Users) > 0 {
+			if len(siteBlock.Seed.Users) > 0 || len(siteBlock.Seed.RemoteUsers) > 0 {
 				return fmt.Errorf("sandbox.Setup: no Mongo for site %q (scenario expects it)", siteName)
 			}
 			continue
 		}
-		// Collect users for this site.
+		// (a) local users — siteId = this site.
 		siteUsers := make(map[string]*seedeffect.SeedUser, len(siteBlock.Seed.Users))
 		for alias := range siteBlock.Seed.Users {
 			if u, ok := sb.Users[alias]; ok {
@@ -290,6 +294,23 @@ func (sb *Sandbox) Setup(ctx context.Context) error {
 		}
 		if err := insertSeedUserProfiles(ctx, db, siteUsers, siteName); err != nil {
 			return fmt.Errorf("sandbox.Setup: insert user profiles for %s: %w", siteName, err)
+		}
+		// (b) remote-user stubs — siteId = each spec's home_site.
+		for alias, spec := range siteBlock.Seed.RemoteUsers {
+			u, ok := sb.Users[alias]
+			if !ok {
+				return fmt.Errorf("sandbox.Setup: remote_users[%q] on %s references an alias not declared in any seed.users (it must be minted on its home_site first)", alias, siteName)
+			}
+			if spec.HomeSite == "" {
+				return fmt.Errorf("sandbox.Setup: remote_users[%q] on %s missing required home_site", alias, siteName)
+			}
+			if spec.HomeSite == siteName {
+				return fmt.Errorf("sandbox.Setup: remote_users[%q] on %s has home_site=%s; a remote-user stub's home_site must differ from the projecting site", alias, siteName, spec.HomeSite)
+			}
+			stubUsers := map[string]*seedeffect.SeedUser{alias: u}
+			if err := insertSeedUserProfiles(ctx, db, stubUsers, spec.HomeSite); err != nil {
+				return fmt.Errorf("sandbox.Setup: insert remote-user stub %s on %s: %w", alias, siteName, err)
+			}
 		}
 	}
 

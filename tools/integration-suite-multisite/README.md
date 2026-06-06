@@ -12,6 +12,13 @@ This is a fork of `tools/integration-suite/`. The two tools coexist.
 Single-site scenarios and docs at `tools/integration-suite/` are frozen
 and remain authoritative for single-site behavior.
 
+> **Design contract: the tool is feature-agnostic.** New scenarios for
+> new app features should require *zero* tool changes. Tool grammar
+> extensions must make their effect explicit in the YAML the author
+> writes — the tool never infers state the author didn't declare. See
+> `ARCHITECTURE.md` §0 for the full contract and the two gates every
+> proposed tool change must pass.
+
 ---
 
 ## Single-site vs multi-site at a glance

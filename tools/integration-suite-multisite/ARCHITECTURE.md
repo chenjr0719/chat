@@ -13,7 +13,55 @@ single-site model.
 
 ---
 
-## 0. The 26-container stack
+## 0. Tool design contract
+
+The tool is a **feature-agnostic black-box harness.** Its grammar
+describes seed state, the fire, and the expected outcomes. The tool
+does not encode knowledge of any specific scenario, app feature, or
+production code path beyond what is required to materialise
+YAML-declared state.
+
+Two rules govern every tool change:
+
+**Rule 1 — Scenarios should not require tool changes.** New scenarios
+for new features should require zero tool changes. If they do, either
+the grammar is incomplete (extend it generically — for ALL future
+scenarios), or the scenario was misauthored (fix the scenario, not
+the tool).
+
+**Rule 2 — Tool behavior must be explicit in the YAML.** Every state
+the tool materialises is declared in the scenario file. The tool
+never infers state the author didn't write. The author can read the
+YAML and predict every Mongo document, NATS subject, and Cassandra
+row the sandbox will produce.
+
+For every proposed tool change, run both gates:
+
+```
+   1.  Would this be needed for an arbitrary new scenario testing an
+       UNRELATED feature?
+            yes  →  grammar completion. Ship it.
+            no   →  scenario-specific. Refuse. Extend grammar or fix
+                    the scenario instead.
+
+   2.  Is the new behavior explicit in the YAML the author writes, or
+       implicit in tool inference?
+            explicit  →  principled. Ship it.
+            implicit  →  shortcut. Revisit until explicit.
+```
+
+A change that fails either gate is a leak: it encodes app knowledge
+into the harness, which then becomes brittle the next time the app
+adds a feature the encoded rule didn't anticipate.
+
+The single-purpose-harness disclaimer at the top of the spec
+(`docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md`)
+is the *implementation* posture; this section is the *design* contract
+the implementation must respect.
+
+---
+
+## 0.1 The 26-container stack
 
 ```
   ┌─────────────────────────────────────────────────────────────────┐

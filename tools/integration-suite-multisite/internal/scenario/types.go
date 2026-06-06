@@ -29,10 +29,28 @@ type SiteBlock struct {
 
 // SiteSeed mirrors single-site's SeedBlock minus cassandra_data
 // (which moves to scenario top level since Cassandra is shared).
+//
+// RemoteUsers declares users whose IDENTITY was minted by another
+// site's seed.users block but whose user profile must also exist HERE
+// (with siteId = home_site) so production code on this site can
+// classify them as remote — required for cross-site federation tests.
+// The author is explicit about which aliases to project, on which
+// site, with which home_site. The engine writes exactly that and
+// nothing more.
 type SiteSeed struct {
 	Users       map[string]SeedUserFlags    `yaml:"users,omitempty"`
+	RemoteUsers map[string]SeedRemoteUser   `yaml:"remote_users,omitempty"`
 	Rooms       []SeedRoom                  `yaml:"rooms,omitempty"`
 	Memberships map[string][]SeedMembership `yaml:"memberships,omitempty"`
+}
+
+// SeedRemoteUser declares a remote-user stub. The alias MUST also
+// appear in the home_site's seed.users block — that's where the user
+// is minted; this block only projects a user-profile document into
+// THIS site's `users` collection with siteId = home_site so the
+// production data model on THIS site can see the user as remote.
+type SeedRemoteUser struct {
+	HomeSite string `yaml:"home_site"`
 }
 
 // SeedCassandraTable, SeedCassandraRow, SeedUserFlags, SeedRoom,
