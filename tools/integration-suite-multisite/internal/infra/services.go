@@ -123,6 +123,12 @@ func serviceEnv(svc, siteID, authSigningKey string, msgBucketHours int, _, _, va
 		"NATS_CREDS_FILE": "/etc/nats/backend.creds",
 		"MONGO_URI":       mongoURIViaProxy,
 		"MONGO_DB":        "chat",
+		// pkg/atrest defaults ATREST_ENABLED=true and requires VAULT_ADDR
+		// to construct its key wrapper at boot. The multi-site stack
+		// doesn't run Vault; disable at-rest envelope encryption so
+		// message-worker / room-service / room-worker / history-service
+		// don't exit code 1 before NATS connect.
+		"ATREST_ENABLED": "false",
 	}
 	merge := func(extras map[string]string) map[string]string {
 		out := make(map[string]string, len(common)+len(extras))

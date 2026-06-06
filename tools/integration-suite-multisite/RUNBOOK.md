@@ -120,14 +120,24 @@ docker network prune -f                   # remove orphaned networks
 | **Scenarios are drafts** | New scenarios land in `scenarios/drafts/` (informational). Promotion to `scenarios/approved/` is a separate human-reviewed PR. |
 | **Diagnosing service failures** | The report shows the assertion reason. For why a service errored, check its logs during the run: `docker logs -f room-service-site-a` (or `-site-b`). The stack is reaped on exit. |
 | **MESSAGE_BUCKET_HOURS must match** | Cassandra seed rows and the reading service must use the same bucket window, or reads silently return nothing. The default is 72h. |
+| **At-rest encryption disabled** | `pkg/atrest` defaults `ATREST_ENABLED=true` and requires `VAULT_ADDR` at boot. The multi-site stack doesn't run Vault, so `serviceEnv` sets `ATREST_ENABLED=false` for every service. If you wire Vault in for a follow-up, drop the override from `serviceEnv` common env. |
+| **Exit-code interpretation under `tee`** | A piped `tee` masks `make`'s exit status — `echo "exit=$?"` after the pipe sees `tee`'s exit, not the runner's. Drop the `tee` for the one-glance check, or use `set -o pipefail`. |
+| **`last-run.md` missing on infra failure** | If the stack fails to boot, the scenario walker never runs and `docs/integration-suite-multisite/last-run.md` is not written. Check `make`'s last lines for the panic site — it'll name the failing service. |
 
 ---
 
 ## One-glance "is it green?" check
 
 ```sh
-time USE_INFRA=true make -C tools/integration-suite-multisite local; echo "exit=$?"
-grep -E 'pass:|fail:' docs/integration-suite-multisite/last-run.md
+# Note: don't pipe through `tee` here — it masks make's exit status.
+time USE_INFRA=true make -C tools/integration-suite-multisite local
+echo "exit=$?"
+
+# last-run.md only exists if the stack booted; if absent, the run
+# died at infra.Up — grep the make output for "panic" or "FAIL".
+grep -E 'pass:|fail:' docs/integration-suite-multisite/last-run.md 2>/dev/null \
+  || echo "no report — stack did not reach scenarios"
+
 docker ps -aq | wc -l    # expect 0 — confirms clean teardown
 ```
 
