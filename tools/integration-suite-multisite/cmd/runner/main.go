@@ -64,7 +64,17 @@ func run() int {
 
 	var (
 		adminURL = env("TOXIPROXY_ADMIN_URL", "http://localhost:8474")
-		expected = []string{"MongoProxy", "CassandraProxy", "WANProxy"}
+		// Multi-site Toxiproxy hosts 6 site-named proxies created
+		// programmatically at boot (see infra/toxiproxy.go). Listed
+		// here so mishap.NewToxiproxyEngine's preflight finds them.
+		// Mishaps themselves are disabled for this milestone per
+		// spec §5.3, but the chaos engine is still constructed (it
+		// just doesn't get exercised by any scenario).
+		expected = []string{
+			"MongoProxy-site-a", "MongoProxy-site-b",
+			"CassandraProxy-site-a", "CassandraProxy-site-b",
+			"NATSProxy-site-a", "NATSProxy-site-b",
+		}
 	)
 	if useInfra {
 		// Zero-value Config{} → 9-service stack × 2 sites + shared
