@@ -1,0 +1,80 @@
+scenario: cross-site-room-rename-federation
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §1 row 1 + room-service/handler.go:139 (room.rename) + room-worker outbox emits + inbox-worker/handler.go:52 (metadata-only federation)
+status: draft
+tag: positive
+
+# Real federation test, rewritten after Run 29 surfaced the misread:
+# production federates METADATA only — memberships, subscriptions,
+# room state — never message bodies. The previous version fired a
+# message.send and expected an outbox event that production never
+# emits.
+#
+# This version fires a room.rename, which DOES publish to OUTBOX_site-a
+# under outbox.site-a.to.site-b.room_renamed when the room has a
+# site-b subscriber. Federation Sources land it on INBOX_site-b.
+#
+# Pre-seed pattern: same room (r-shared) materialised on both sites
+# with alice subscribed on site-a and bob subscribed on site-b. The
+# per-site memberships in the YAML are what make room-worker-site-a
+# recognise that bob lives on site-b when it iterates the room's
+# subscribers — that's the trigger for the cross-site outbox publish.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-shared
+          name: SharedChannel
+          type: channel
+      memberships:
+        alice:
+          - room: r-shared
+            roles: [owner]
+  site-b:
+    seed:
+      users:
+        bob: { verified: true }
+      rooms:
+        - id: r-shared
+          name: SharedChannel
+          type: channel
+      memberships:
+        bob: [r-shared]
+
+input:
+  site: site-a
+  verb: nats_request
+  # Rename subject pattern from pkg/subject:84 —
+  # chat.user.<account>.request.room.<roomID>.<siteID>.room.rename
+  subject: chat.user.${alice.account}.request.room.r-shared.site-a.room.rename
+  payload:
+    # Body shape from room-service/handler.go handleRoomRename — only
+    # newName is in the wire body; roomID and account come from the
+    # subject (the authoritative identity).
+    newName: SharedChannelRenamed
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 — synchronous reply confirms room-service-site-a accepted.
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+
+  # Surface 2 — federation tail. room-worker-site-a publishes
+  # outbox.site-a.to.site-b.room_renamed when the room has a
+  # site-b subscriber. The Source on INBOX_site-b
+  # (catalogs/federation.yaml) sources OUTBOX_site-a with filter
+  # outbox.site-a.to.site-b.> — the rename event arrives here.
+  - location: jetstream_consume
+    site: site-b
+    args:
+      stream: INBOX_site-b
+      filter_subject: outbox.site-a.to.site-b.room_renamed
+    match:
+      body_json:
+        roomId: r-shared
+        newName: SharedChannelRenamed
+    timeout: 15s
