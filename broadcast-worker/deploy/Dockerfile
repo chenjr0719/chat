@@ -1,20 +1,27 @@
+# syntax=docker/dockerfile:1.7
+# BuildKit syntax directive enables --mount=type=cache below. Falls back
+# gracefully on docker 23+ (which uses BuildKit by default); older docker
+# users should `export DOCKER_BUILDKIT=1`.
 FROM golang:1.25.11-alpine AS builder
-
 WORKDIR /app
-
 COPY go.mod go.sum ./
-RUN go mod download
-
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 COPY pkg/ pkg/
 COPY broadcast-worker/ broadcast-worker/
+# Cache mounts share the Go module + build cache across every service's
+# Dockerfile so 11 separate `make build-test-images` runs reuse a single
+# pkg/mod tree (~500 MB) instead of redownloading per service.
+# -ldflags='-s -w' strips the symbol table + DWARF (~25% smaller binary).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags='-s -w' -o /broadcast-worker ./broadcast-worker/
 
-RUN CGO_ENABLED=0 go build -o /broadcast-worker ./broadcast-worker/
-
-FROM alpine:3.21
-
-RUN apk add --no-cache ca-certificates && adduser -D -u 10001 app
-
+# Distroless static is ~2 MB (vs alpine's ~7 MB), ships ca-certs + tzdata
+# + a nonroot user (UID 65532), and contains no shell — every CGO_ENABLED=0
+# Go binary works here.
+FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /broadcast-worker /broadcast-worker
-
-USER app
+USER nonroot:nonroot
 ENTRYPOINT ["/broadcast-worker"]

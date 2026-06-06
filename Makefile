@@ -1,8 +1,15 @@
 .PHONY: lint fmt test test-integration generate build deps-up deps-down up down dev \
-        obs-up obs-down tools sast sast-gosec sast-vuln sast-semgrep
+        obs-up obs-down tools sast sast-gosec sast-vuln sast-semgrep \
+        prune-test-images
 
-DEPS_COMPOSE     := docker-local/compose.deps.yaml
-SERVICES_COMPOSE := docker-local/compose.services.yaml
+DEPS_COMPOSE      := docker-local/compose.deps.yaml
+SERVICES_COMPOSE  := docker-local/compose.services.yaml
+SERVICES_OVERRIDE := docker-local/compose.services.overrides.yaml
+# Chain the include layer (compose.services.yaml) with the toxiproxy override
+# layer in every services-side invocation. The override file is its own -f arg
+# rather than being inlined into compose.services.yaml because Docker Compose
+# disallows redefining a service that was pulled in via `include:`.
+SERVICES_FLAGS    := -f $(SERVICES_COMPOSE) -f $(SERVICES_OVERRIDE)
 NATS_CREDS       := docker-local/backend.creds
 NATS_CONF        := docker-local/nats.conf
 NATS_CONTAINER   := chat-local-nats
@@ -119,7 +126,7 @@ up:
 ifdef SERVICE
 	docker compose -f $(SERVICE)/deploy/docker-compose.yml up --build
 else
-	docker compose -f $(SERVICES_COMPOSE) up --build
+	docker compose $(SERVICES_FLAGS) up --build
 endif
 
 # Hot-reload a single service against the shared deps stack. Requires
@@ -131,13 +138,31 @@ endif
 	@chmod +x tools/dev/dev.sh
 	./tools/dev/dev.sh $(SERVICE)
 
-# Stop microservices. SERVICE=<name> stops one; otherwise stops every service.
+# Stop microservices. SERVICE=<name> stops one; otherwise stops every service
+# AND prunes dangling builder cache. Phase 3.1: each `make build-test-images`
+# round leaves a few hundred MB of dangling builder layers behind; the
+# whole-stack `make down` is the natural place to reclaim them. Per-SERVICE
+# `make down SERVICE=foo` skips prune so it doesn't disturb sibling services.
 down:
 ifdef SERVICE
 	docker compose -f $(SERVICE)/deploy/docker-compose.yml down
 else
-	docker compose -f $(SERVICES_COMPOSE) down
+	docker compose $(SERVICES_FLAGS) down
+	@$(MAKE) prune-test-images
 endif
+
+
+# Reclaim dangling builder cache + untagged builder stages. Safe: image
+# prune -f only removes images with NO repository:tag reference (i.e.
+# orphaned layers from a `docker build` that produced a new tagged image),
+# never deletes a tagged image. Builder cache pruning targets BuildKit's
+# layer cache, which is rebuilt on the next `docker build` from the Go
+# module cache mount in each Dockerfile — no functional loss, just disk.
+.PHONY: prune-test-images
+prune-test-images:
+	docker image prune -f
+	docker builder prune -f --keep-storage 2GB
+
 
 # --- Local observability targets ----------------------------------------------
 # Start cAdvisor + Prometheus + Grafana. Requires `make deps-up` first so the
@@ -216,3 +241,22 @@ seed-reset:
 
 seed-dry-run:
 	go run ./tools/seed-sample-data --dry-run
+
+# Build every microservice image that internal/infra.Up consumes.
+# Tagged chat-local-services-<svc>:${TAG:-latest} via the
+# docker-local/compose.services.yaml project name.
+#
+# Usage:
+#   make build-test-images              # tags :latest
+#   make build-test-images TAG=v1.2.3   # tags :v1.2.3
+build-test-images:
+	@TAG=$${TAG:-latest}; \
+	echo "==> building chat-local-services-*:$$TAG"; \
+	docker compose $(SERVICES_FLAGS) build; \
+	if [ "$$TAG" != "latest" ]; then \
+	  for svc in auth-service broadcast-worker history-service inbox-worker \
+	             message-gatekeeper message-worker notification-worker \
+	             room-service room-worker search-service search-sync-worker; do \
+	    docker tag chat-local-services-$$svc:latest chat-local-services-$$svc:$$TAG || exit 1; \
+	  done; \
+	fi

@@ -1,0 +1,36 @@
+scenario: verified_user_creates_channel_room
+source: room-service/handler.go:296-374 + pkg/model/event.go:245-253
+
+seed:
+  users:
+    requester:
+      verified: true
+    other:
+      verified: true
+
+base_input:
+  verb: nats_request
+  subject: chat.user.${requester.account}.request.room.${site}.create
+  payload:
+    name: $auto
+    users: ["${other.account}"]
+  credential: ${requester.credential}
+
+cases:
+  - name: channel-room-created
+    tag: positive
+    expected:
+      - location: reply
+        match:
+          body_json:
+            status: accepted
+            roomType: channel
+      - location: jetstream_consume
+        args:
+          stream: ROOMS_${site}
+          filter_subject: chat.room.canonical.${site}.>
+        match:
+          body_json:
+            name: ${input.payload.name}
+            requesterAccount: ${requester.account}
+            requesterId: ${requester.id}

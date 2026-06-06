@@ -1,0 +1,90 @@
+scenario: message_gatekeeper_rejects_unsubscribed_sender
+source: message-gatekeeper/handler.go:85 (slog.Error rejection log) + message-gatekeeper/handler.go:191-198 (errNotSubscribed gate) + docs/spec-room-subscription-seed.md
+
+# Draft #2.
+# The negative companion to Draft #1: where Draft #1 proves the gatekeeper
+# accepts a subscribed sender and the canonical event lands on
+# MESSAGES_CANONICAL, this scenario proves the gatekeeper rejects an
+# unsubscribed sender — specifically that the canonical event NEVER
+# lands. Uses the *absence* of a memberships entry as the test signal,
+# the inverse of Draft #1's seed shape.
+
+seed:
+  users:
+    eve_intruder:
+      verified: true
+  rooms:
+    - id: r-private-vault
+      name: Private Vault
+      type: channel
+  # eve_intruder is deliberately NOT listed under memberships, so
+  # sandbox_rooms.go inserts zero subscriptions for the
+  # (eve_intruder, r-private-vault) tuple. The gatekeeper's
+  # store.GetSubscription (handler.go:192) then surfaces errNotSubscribed
+  # and the request fails the gate at handler.go:194-196.
+  memberships: {}
+
+base_input:
+  verb: jetstream_publish
+  subject: chat.user.${eve_intruder.account}.room.r-private-vault.${site}.msg.send
+  payload:
+    # 20-char base62 (idgen.IsValidMessageID at handler.go:168). The
+    # message-id is structurally valid so the gatekeeper does NOT
+    # reject at the ID-format gate — we need the rejection to happen
+    # at the subscription gate to prove the right rule fired.
+    id: mEveIntruderReject01
+    content: Drop tables, please
+    # Hyphenated UUIDv7 (idgen.IsValidUUID at handler.go:163). Same
+    # hardcode rationale as Draft #1 — payload substitution runs before
+    # Execute, so ${input.requestId} is empty at publish time.
+    requestId: 01970000-0000-7000-8000-000000000002
+  credential: ${eve_intruder.credential}
+
+cases:
+  - name: unsubscribed-sender-rejected-and-canonical-silent
+    tag: negative
+    expected:
+      # ─── Surface 1 — gatekeeper logs the rejection ──────────────────
+      # handler.go:85 emits slog.Error("process message failed", ...)
+      # with the wrapped error from handler.go:195
+      # ("user <account> is not subscribed to room <roomID>"). slog
+      # JSON output puts the wrapped error string under the `error`
+      # key. matches_shape uses exact equality (deepEq fmt.Sprintf)
+      # for scalar string values — substring matching is NOT
+      # supported — so the assertion must mirror the binary's
+      # emitted string byte-for-byte. Confirmed against a live
+      # USE_INFRA=true run (Finding 18). All four fields together
+      # prove the SPECIFIC failure-path branch ran (subscription
+      # rejection), not some unrelated infra failure that flows
+      # through the same slog.Error line.
+      - location: logs_tail
+        args:
+          container: message-gatekeeper
+        match:
+          msg: process message failed
+          error: user eve_intruder is not subscribed to room r-private-vault
+          account: ${eve_intruder.account}
+          roomID: r-private-vault
+
+      # ─── Surface 2 — canonical stream stays silent (not: true) ──────
+      # case_runner uses Consistently(...).ShouldNot(matcher) when
+      # `not: true` (case_runner.go:205-209), polling for the default
+      # 5-second window. If ANY message with eve_intruder's
+      # userAccount + the test message id appears on
+      # MESSAGES_CANONICAL_${site} during that window, the assertion
+      # fails — which is exactly what would happen if the gatekeeper
+      # leaked an unsubscribed send. Filtering on both fields (not
+      # just the message id) is defensive: if a future regression
+      # ever emits the canonical event with a different id we still
+      # catch the leak via the userAccount match.
+      - location: jetstream_consume
+        args:
+          stream: MESSAGES_CANONICAL_${site}
+          filter_subject: chat.msg.canonical.${site}.created
+        not: true
+        match:
+          body_json:
+            message:
+              id: mEveIntruderReject01
+              userAccount: ${eve_intruder.account}
+              roomId: r-private-vault

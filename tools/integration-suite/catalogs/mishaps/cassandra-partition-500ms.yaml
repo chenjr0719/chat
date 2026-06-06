@@ -1,0 +1,12 @@
+mishap: cassandra-partition-500ms
+axis: p
+trigger: cascade-wide
+class: resilience
+factory: CassandraPartitionFactory
+eligible: scenario-uses-cassandra
+produces_noise: disconnect_noise
+notes: |
+  Toxiproxy proxy.Disable() on CassandraProxy for 500ms when all
+  in-scope actors have reached the first cassandra-using pod. Closes
+  existing TCP connections and refuses new dials — exercises the
+  gocql driver's fast-fail / reconnect path. Produces disconnect_noise.

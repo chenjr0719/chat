@@ -1,11 +1,19 @@
 name: chat-local-services
 
 # Aggregates every microservice's deploy/docker-compose.yml. Expects the shared
-# third-party deps (NATS, MongoDB, Cassandra, Elasticsearch, Keycloak) to
-# already be running on the chat-local network — start them via `make deps-up`.
+# third-party deps (NATS, MongoDB, Cassandra, Elasticsearch, Keycloak, Toxiproxy)
+# to already be running on the chat-local network — start them via `make deps-up`.
 #
 # Start:  make up        (foreground, streams every service's logs)
 # Stop:   make down
+#
+# Phase 1 chaos infra: every service that talks to Mongo or Cassandra is
+# re-pointed at chat-local-toxiproxy via compose.services.overrides.yaml.
+# The Makefile chains both files with `-f` so the override layer always
+# applies (see `make up` / `make down`). The per-service
+# deploy/docker-compose.yml files stay untouched — Toxiproxy is a suite-only
+# concern, not part of any service's own dev loop.
+# See tools/integration-suite/ARCHITECTURE.md §5.
 
 include:
   - ../auth-service/deploy/docker-compose.yml

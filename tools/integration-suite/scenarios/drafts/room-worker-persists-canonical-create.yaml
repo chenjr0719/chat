@@ -1,0 +1,46 @@
+scenario: room_worker_persists_canonical_create
+source: room-worker/handler.go:1080-1136 + room-worker/store_mongo.go:132-133
+
+seed:
+  users:
+    requester:
+      verified: true
+    other:
+      verified: true
+
+base_input:
+  verb: jetstream_publish
+  subject: chat.room.canonical.${site}.create
+  payload:
+    roomId: r-pure-test
+    name: pure-test-room
+    requesterId: ${requester.id}
+    requesterAccount: ${requester.account}
+    users: ["${other.account}"]
+    resolvedUsers: ["${other.account}"]
+    resolvedOrgs: []
+    timestamp: ${now}
+  credential: ${service.backend}
+
+cases:
+  - name: canonical-create-persists-to-mongo
+    tag: positive
+    expected:
+      - location: jetstream_consume
+        args:
+          stream: ROOMS_${site}
+          filter_subject: chat.room.canonical.${site}.>
+        match:
+          body_json:
+            roomId: r-pure-test
+            requesterAccount: ${requester.account}
+      - location: mongo_find
+        args:
+          collection: rooms
+          filter:
+            _id: r-pure-test
+        match:
+          _id: r-pure-test
+          type: channel
+          siteId: ${site}
+          name: pure-test-room

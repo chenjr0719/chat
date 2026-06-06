@@ -1,0 +1,52 @@
+# Service ability profile: room-service
+#
+# Declares every effect this service is allowed to produce. The runtime
+# uses this profile two ways:
+#   1. Out-of-trace events whose owner is room-service and whose
+#      location/pattern matches an entry below are classified as
+#      "background" and ignored.
+#   2. The /scenario-author hard-stop check #5 verifies that every
+#      expected read in a scenario targeting room-service maps to an
+#      `on_trigger.writes` entry below — preventing the runtime from
+#      flagging a legitimate effect as anomaly.
+#
+# When adding a trigger:
+#   - `source` is the transport carrying the inbound request
+#     (nats | http | jetstream-pull | jetstream-push).
+#   - `pattern` is a wildcard subject (NATS) or URL pattern (HTTP).
+#   - `on_trigger.writes` lists locations the service touches as a
+#     direct consequence of that trigger. Reads-only effects (e.g.
+#     mongo lookups) are not listed — only writes/outputs the runtime
+#     can observe.
+#
+# Part-1 scope: only the `create` trigger is catalogued today.
+# `room-service/handler.go:63-99` RegisterCRUD subscribes to 11
+# subjects total (rooms.list, rooms.get, rooms.info.batch,
+# member.role-update, member.remove, member.add, msg.read,
+# msg.read-receipt, member.list, org.members, plus create).
+# Additional triggers are added here as their scenarios are authored,
+# per v2 design's deliberate-growth discipline.
+
+service: room-service
+container: room-service       # docker-local container name
+mishap_eligible: true         # opt this service into mishap targeting
+triggers:
+  - source: nats
+    # `*` in the siteID slot is deliberate: the catalog describes the
+    # subject SHAPE the service owns (deployment-agnostic), not the
+    # literal subscription string any particular site-bound instance
+    # issues. The wide pattern lets the verdict classifier tag
+    # cross-site room-service activity as background instead of
+    # falsely flagging it as anomaly. Scenarios get the concrete site
+    # value via the `${site}` placeholder at fire time.
+    pattern: "chat.user.*.request.room.*.create"
+    on_trigger:
+      # Channel/DM-room creation handler. Replies synchronously to the
+      # requester (handler.go:114), logs the structured "create-room"
+      # entry (handler.go:110, 115), and publishes the canonical event
+      # for room-worker to consume + persist (handler.go:366). It does
+      # NOT write mongo.rooms directly on this path — that's
+      # room-worker's job (see catalogs/services/room-worker.yaml).
+      - writes: reply
+      - writes: logs.room-service
+      - writes: jetstream.rooms-canonical

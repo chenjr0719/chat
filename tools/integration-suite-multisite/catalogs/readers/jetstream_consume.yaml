@@ -1,0 +1,40 @@
+# Reader: jetstream_consume  (universal primitive — Phase 4.0)
+#
+# Universal JetStream observation primitive. Each YAML assertion
+# declares the stream + subject filter for the ephemeral consumer:
+#
+#   expected:
+#     - location: jetstream_consume
+#       args:
+#         stream: "MESSAGES_CANONICAL_site-local"
+#         filter_subject: "chat.msg.canonical.site-local.>"
+#       match:
+#         body_json:
+#           sender: "${alice.account}"
+#
+# Stateful: opening a JetStream consumer is expensive, so the poller
+# caches one underlying StreamPoller per (stream, filter_subject)
+# tuple on first PollFn call. Multiple assertions on the same tuple
+# share a single consumer. Closing the poller (Sandbox.Teardown) tears
+# down every cached consumer.
+#
+# Emit shape (one event per published message):
+#   subject     — concrete subject string
+#   body_json   — parsed payload when JSON-decodable; omitted otherwise
+#   body_raw    — raw string fallback
+#   header      — map[string][]string of NATS headers
+#   sequence    — JetStream message sequence number
+#   timestamp   — JetStream metadata.Timestamp; fallback to payload `timestamp`
+#
+# Backend: needs an admin NATS connection (operator JWT). The runner
+# opens one when NATS_CREDS_FILE is set; without it, jetstream_consume
+# registers but warns at PollFn time and the assertion times out.
+
+location: jetstream_consume
+owners:    []
+timestamp_source: js_metadata_timestamp
+shape:    JetStreamSubjectPayload
+executor: JetStreamConsumePoller
+
+events: []
+ignore: []

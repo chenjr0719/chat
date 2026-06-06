@@ -1,0 +1,113 @@
+scenario: message_send_persists_canonical_and_cassandra
+source: message-gatekeeper/handler.go:67-264 + message-worker/store_cassandra.go:65-95 + docs/cassandra_message_model.md + docs/spec-room-subscription-seed.md
+
+# Draft #1,
+# unblocked by the Phase 4.2 seed-subscription engine
+# (docs/spec-room-subscription-seed.md). Drives the full sender-→-canonical
+# -→-Cassandra path in one case so a regression in any of the three
+# downstream surfaces flips one verdict.
+
+seed:
+  users:
+    alice:
+      verified: true
+    bob:
+      verified: true
+  rooms:
+    - id: r-engineering
+      name: Engineering Chat
+      type: channel
+  # Phase 4.2 top-level memberships block (bare-string shorthand for
+  # default-member). alice + bob in r-engineering satisfies the
+  # message-gatekeeper subscription lookup
+  # (handler.go:192 → store.GetSubscription) so the send is not
+  # rejected with errNotSubscribed.
+  memberships:
+    alice:
+      - r-engineering
+    bob:
+      - r-engineering
+
+base_input:
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-engineering.${site}.msg.send
+  payload:
+    # message-gatekeeper enforces a 20-char base62 message ID
+    # (idgen.IsValidMessageID at handler.go:168). The gap-analysis
+    # plan called this out as "m-cassandra-happy"; the hyphenated
+    # form would fail validation, so we substitute a 20-char base62
+    # value that preserves the "cassandra happy" semantic for
+    # grep-ability across logs/scenarios.
+    id: mCassandraHappy00001
+    content: Hello from the suite
+    # gatekeeper requires a hyphenated UUID for the payload-level
+    # requestId (handler.go:163 → idgen.IsValidUUID). Hardcoded
+    # because payload substitution runs BEFORE Execute
+    # (dispatcher.go:51) — ${input.requestId} resolves empty at the
+    # publish site, and the gatekeeper only reads the payload field.
+    # Static UUID is safe: every scenario gets its own Sandbox so
+    # cross-scenario dedup is not a concern.
+    requestId: 01970000-0000-7000-8000-000000000001
+  credential: ${alice.credential}
+
+cases:
+  - name: happy-path-canonical-and-cassandra-history
+    tag: positive
+    expected:
+      # ─── Surface 1 — MESSAGES_CANONICAL on JetStream ────────────────
+      # gatekeeper validates → publishes to
+      # chat.msg.canonical.${site}.created on MESSAGES_CANONICAL_${site}
+      # (handler.go:257-261). The body_json shape mirrors
+      # pkg/model.MessageEvent (event/message/siteId/timestamp).
+      - location: jetstream_consume
+        args:
+          stream: MESSAGES_CANONICAL_${site}
+          filter_subject: chat.msg.canonical.${site}.created
+        match:
+          subject: chat.msg.canonical.${site}.created
+          body_json:
+            event: created
+            siteId: ${site}
+            message:
+              id: mCassandraHappy00001
+              roomId: r-engineering
+              userAccount: ${alice.account}
+              userId: ${alice.id}
+              content: Hello from the suite
+
+      # ─── Surface 2 — messages_by_room (bucketed history table) ──────
+      # message-worker.SaveMessage (store_cassandra.go:76-82) writes
+      # this row. Single `?` is auto-bound to T_open by
+      # buildCassandraParams (pollers/cassandra.go:97-99), so this
+      # case also exercises the auto-timestamp filter path the
+      # cassandra_select spec calls out.
+      - location: cassandra_select
+        args:
+          query: |
+            SELECT JSON * FROM messages_by_room
+            WHERE room_id = 'r-engineering' AND created_at >= ?
+            ALLOW FILTERING
+        match:
+          message_id: mCassandraHappy00001
+          room_id: r-engineering
+          msg: Hello from the suite
+          site_id: ${site}
+
+      # ─── Surface 3 — messages_by_id (direct-lookup table) ───────────
+      # Second insert in the same SaveMessage batch
+      # (store_cassandra.go:83-90). Two `?`s in the query would
+      # short-circuit the auto-bind heuristic; one `?` is used with
+      # explicit params: [...] to exercise the explicit-params path,
+      # confirming both binding strategies work alongside each other.
+      - location: cassandra_select
+        args:
+          query: |
+            SELECT JSON * FROM messages_by_id
+            WHERE message_id = ?
+          params:
+            - mCassandraHappy00001
+        match:
+          message_id: mCassandraHappy00001
+          room_id: r-engineering
+          msg: Hello from the suite
+          site_id: ${site}

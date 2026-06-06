@@ -1,0 +1,34 @@
+scenario: room-creates-federates-to-site-b
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §8
+status: draft
+tag: positive
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+
+input:
+  site: site-a
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.site-a.create
+  payload:
+    name: Engineering
+    users: ["${alice.account}"]
+  credential: ${alice.credential}
+
+expected:
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        name: Engineering
+    match:
+      name: Engineering
+      createdBy: ${alice.id}

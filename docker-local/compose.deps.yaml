@@ -32,8 +32,8 @@ services:
     # tracks the same image testcontainers uses.
     image: mongo:8.2.9
     container_name: chat-local-mongodb
-    ports:
-      - "27017:27017"
+    # Host port 27017 is owned by chat-local-toxiproxy (MongoProxy).
+    # Services reach mongo via the proxy on the chat-local network.
     volumes:
       - mongo-data:/data/db
     healthcheck:
@@ -48,15 +48,18 @@ services:
   cassandra:
     image: cassandra:5
     container_name: chat-local-cassandra
-    ports:
-      - "9042:9042"
+    # Host port 9042 is owned by chat-local-toxiproxy (CassandraProxy).
     environment:
       - CASSANDRA_CLUSTER_NAME=chat-dev
-      # Cap heap so the local stack fits in 8GB Docker; default ~2GB OOMs.
-      - MAX_HEAP_SIZE=512M
+      # Phase 3.1 diet: heap halved from 512M → 256M (new-gen unchanged at
+      # 128M) so the local stack lives within ~1.5 GB total instead of the
+      # ~3 GB the previous caps demanded. Empirically survives schema init
+      # + integration-suite writes; bump back to 512M if you see GC thrash.
+      - MAX_HEAP_SIZE=256M
       - HEAP_NEWSIZE=128M
-    # 1GB OOMs mid-init — JVM off-heap pushes total to ~1.5× heap.
-    mem_limit: 1500m
+    # mem_limit drops alongside the heap — JVM off-heap is ~1.5× heap, so
+    # 256M heap fits in 800m. Adjust if heap goes back up.
+    mem_limit: 800m
     volumes:
       - cassandra-data:/var/lib/cassandra
     healthcheck:
@@ -96,6 +99,39 @@ services:
     networks:
       - chat-local
 
+  # Toxiproxy: TCP-layer chaos for the integration-suite runner.
+  # Sits between chat services and the DB containers; the runner toggles
+  # named proxies (MongoProxy, CassandraProxy, WANProxy) via the admin
+  # API to inject network partitions. Pre-provisioned via the mounted
+  # toxiproxy.json — the runner only enables/disables, never creates.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    container_name: chat-local-toxiproxy
+    command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/toxiproxy.json"]
+    ports:
+      - "8474:8474"    # admin API (runner connects here)
+      - "27017:27017"  # MongoProxy listen
+      - "9042:9042"    # CassandraProxy listen
+      - "14222:4222"   # WANProxy listen (Phase 2 scaffolding — exposed but unused in Phase 1)
+    volumes:
+      - ./toxiproxy.json:/etc/toxiproxy/toxiproxy.json:ro
+    networks:
+      - chat-local
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    healthcheck:
+      # ghcr.io/shopify/toxiproxy:2.9.0 is distroless — no wget, no curl, no
+      # shell. The only thing in PATH is /toxiproxy-cli, which exits 0 when
+      # the admin API responds and non-zero otherwise.
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
     container_name: chat-local-elasticsearch
@@ -104,7 +140,9 @@ services:
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      # Phase 3.1 diet: heap halved from 512M → 256M, symmetric with
+      # Cassandra above so the local stack fits well under 2 GB.
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
     volumes:
       - es-data:/usr/share/elasticsearch/data
     healthcheck:

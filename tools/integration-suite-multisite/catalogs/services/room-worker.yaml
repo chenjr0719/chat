@@ -1,0 +1,35 @@
+# Service ability profile: room-worker
+#
+# room-worker consumes canonical room events from JetStream and is the
+# actual writer of the `rooms` and `subscriptions` Mongo collections
+# (see `room-worker/store_mongo.go:132-133` for the room insert).
+# room-service publishes canonical events; room-worker materializes
+# them.
+#
+# Part-1 scope: only the `create` canonical operation is catalogued
+# today. room-worker also handles `member.add`, `member.remove`, and
+# `member.role-update` (see `room-worker/handler.go:178` switch on
+# subject suffix). Additional triggers will be added here as their
+# scenarios are authored, per v2 design's deliberate-growth
+# discipline.
+
+service: room-worker
+container: room-worker        # docker-local container name
+mishap_eligible: true         # opt this service into mishap targeting
+triggers:
+  - source: jetstream-pull
+    # The `*` in the siteID slot matches the same shape-vs-literal
+    # rationale used in catalogs/services/room-service.yaml: the
+    # catalog describes the subject pattern the service owns, not the
+    # literal subscription string. Scenarios resolve the concrete
+    # siteID via the `${site}` placeholder at fire time.
+    pattern: "chat.room.canonical.*.create"
+    on_trigger:
+      # Materializes the new room into Mongo and the corresponding
+      # subscription rows for the creator + invited members. Logs the
+      # structured "room created" entry. (Membership subscriptions
+      # land in the `subscriptions` collection — a future reader will
+      # observe those; for Part-1 we only catalog the `rooms`
+      # collection effect.)
+      - writes: mongo.rooms
+      - writes: logs.room-worker

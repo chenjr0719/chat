@@ -1,0 +1,11 @@
+mishap: crash
+axis: x
+trigger: per-pod
+class: idempotency
+factory: CrashFactory
+eligible: all-pods
+produces_noise: restart_noise
+notes: |
+  docker restart of the target pod, triggered when the gather
+  completes on the target. Under c=1, all 3 actors must reach the
+  target pod before the restart fires.

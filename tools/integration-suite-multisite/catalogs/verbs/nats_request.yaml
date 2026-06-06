@@ -1,0 +1,14 @@
+name: nats_request
+description: |
+  Synchronous NATS request/reply. Connects as the given credential,
+  sends payload to subject, waits for the reply (or a transport error)
+  with a 5s default timeout.
+input_shape:
+  subject:    { type: string, required: true }
+  payload:    { type: bytes,  required: true }
+  credential: { type: ref,    required: true }
+transport_effect_template:
+  - "either a reply (success) within 5s, OR a transport error class"
+  - "reply carries the traceparent header set by the dispatcher"
+  - "outbound request carries X-Request-ID (UUIDv7 hyphenated) per CLAUDE.md §3; the same ID is set on Outcome.RequestID for log correlation"
+executor: NATSRequestExecutor

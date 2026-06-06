@@ -1,0 +1,40 @@
+# Reader: reply
+#
+# The synthetic location for the immediate response of a request/reply
+# verb. The dispatcher (`tools/integration-suite/internal/runtime/dispatcher.go`)
+# captures the verb's Outcome and Inject()s a single event. There is no
+# service that "owns" this location, hence `owners: []`.
+#
+# Emit shape (one event per scenario; Event.Payload is a typed
+# `readers.ReplyPayload` from `internal/readers/reply_payload.go`):
+#
+#   body_json    — parsed body as map[string]any when the reply bytes
+#                  decode as a JSON object. Omitted if the body is not
+#                  JSON-decodable. Use this for asserting on typed
+#                  reply structs (e.g. CreateRoomReply at
+#                  pkg/model/event.go:246).
+#   body_raw     — string form of the reply bytes when they are not
+#                  JSON. Empty when body_json is populated.
+#   header       — map[string][]string of every NATS header on the
+#                  reply (e.g. echoed X-Request-ID, server-set fields).
+#                  Omitted on transport error.
+#   error        — Outcome.Err.Error() verbatim when the verb failed
+#                  at the transport layer (no-responders, timeout,
+#                  connection-closed, etc.). Empty on success. NOT
+#                  classified into an enum — match it verbatim.
+#   latency_ms   — milliseconds between verb fire and reply (or error).
+#
+# Pair with `matches_shape` for field assertions against any of the
+# above. The matcher's struct fall-through (marshal-and-unmarshal-as-
+# map) handles the typed payload transparently — authors write
+# `expected: { body_json: {...} }` or `expected: { error: "..." }` as
+# if the event were a flat map.
+
+location: reply
+owners:    []
+timestamp_source: dispatcher-recorded receive time
+shape:    readers.ReplyPayload
+executor: NATSReplyReader
+
+events: []  # per-pattern classification rules (§4.6.0); populated per-reader when Task 9 wires the verdict path
+ignore: []  # regex patterns dropped at the reader before any classification

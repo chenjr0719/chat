@@ -53,6 +53,7 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 | `make generate` | Regenerate all mocks |
 | `make generate SERVICE=<name>` | Regenerate mocks for a single service |
 | `make build SERVICE=<name>` | Build a single service binary |
+| `make -C tools/integration-suite local` | Run the integration suite against the docker-local single-site stack (auto-fills env; assumes `make deps-up && make up` ran). See Section 6 + `tools/integration-suite/Makefile` for the full target list. |
 | `make tools` | Install pinned dev/SAST tooling (`golangci-lint`, `gosec`, `govulncheck`, `semgrep`) |
 | `make sast` | Run all SAST scans (`gosec`, `govulncheck`, `semgrep`); fails on medium+ |
 | `make sast-gosec` / `make sast-vuln` / `make sast-semgrep` | Run a single SAST scan |
@@ -328,3 +329,10 @@ All commands are wrapped in the root Makefile. Always use `make` targets — nev
 - JetStream workers cleanup order: `iter.Stop()` → `wg.Wait()` (with timeout) → `nc.Drain()` → disconnect databases
 - HTTP services cleanup order: `nc.Drain()` → disconnect databases
 - Shutdown timeout (25s) must be less than Kubernetes `terminationGracePeriodSeconds` (30s)
+
+### Integration Test Suite (`tools/integration-suite/`)
+- A scenario-driven black-box test **platform** — distinct from per-service `integration_test.go` (which test code) and `tools/loadgen/` (which measures capacity). It tests the assembled system against the architecture, to find behavioral regressions.
+- YAML scenarios under `scenarios/drafts/` declare seed users + base verb input + ordered cases; per-scenario a **Sandbox** materializes the seed and runs each case sequentially; cases assert outcomes via **Gomega streaming matchers** against six universal data-source primitives (`reply`, `mongo_find`, `cassandra_select`, `jetstream_consume`, `nats_subscribe`, `logs_tail`). Run via the suite's self-contained Makefile (`make -C tools/integration-suite local` from repo root) — never raw `go test`, never via the root Makefile (root stays clean).
+- **Owns no infrastructure by default.** Connects to whatever URLs env vars provide (`AUTH_SERVICE_URL`, `NATS_URL`, `MONGO_URI`, `CASSANDRA_HOSTS`, …). `USE_INFRA=true` opt-in boots its own containerized stack via `internal/infra` (testcontainers).
+- **Authoring rules** are in `tools/integration-suite/AUTHORING.md`; YAML grammar in `tools/integration-suite/SCENARIO-REFERENCE.md`; architecture in `tools/integration-suite/ARCHITECTURE.md`; ops in `tools/integration-suite/RUNBOOK.md`. Expected behavior must come from a cited design doc, never invented (every scenario has a `source:` field).
+- **Scoring:** `@status:approved` scenarios form the authoritative CI-gating score (written to `docs/integration-suite/last-run-approved.md`); everything else is informational DRAFT (full report in `docs/integration-suite/last-run.md`). Per-case latest/best/worst tracked in `docs/integration-suite/performance.json`.

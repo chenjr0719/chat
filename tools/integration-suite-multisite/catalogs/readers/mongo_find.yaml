@@ -1,0 +1,35 @@
+# Reader: mongo_find  (universal primitive — Phase 4.0)
+#
+# Universal Mongo find primitive. Each YAML assertion declares the
+# collection + filter to query at run time:
+#
+#   expected:
+#     - location: mongo_find
+#       args:
+#         collection: rooms
+#         filter:
+#           name: "Engineering"
+#       match:
+#         type: channel
+#
+# The poller AND-merges `createdAt >= startTime` into args.filter so
+# rows from prior scenarios are excluded. Author-supplied `createdAt`
+# clauses always win, so a scenario asserting on seed data can opt out.
+#
+# Substitution: args goes through the same Substitute pipeline as
+# match — `${alice.account}`, `${site}`, `${input.payload.name}`,
+# etc. all resolve before the Find runs.
+#
+# Owner hints (failure-detail attribution only — doesn't affect test
+# logic): rooms / room_members / subscriptions → room-worker; users →
+# auth-service; thread_rooms / thread_subscriptions → message-worker.
+# Other collections get an empty owner.
+
+location: mongo_find
+owners:    []   # n/a — owner is per-collection, resolved at PollFn time
+timestamp_source: poll_walltime
+shape:    map[string]any  # raw BSON doc
+executor: MongoFindPoller
+
+events: []
+ignore: []

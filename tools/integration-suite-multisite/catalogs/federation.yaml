@@ -1,0 +1,9 @@
+sources:
+  - on: site-b
+    stream: INBOX_site-b
+    from_stream: OUTBOX_site-a
+    filter: outbox.site-a.to.site-b.>
+  - on: site-a
+    stream: INBOX_site-a
+    from_stream: OUTBOX_site-b
+    filter: outbox.site-b.to.site-a.>

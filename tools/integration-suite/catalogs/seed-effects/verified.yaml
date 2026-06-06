@@ -1,0 +1,11 @@
+effect: verified
+description: |
+  When true, the sandbox seeder mints an nkey + JWT for this user via
+  auth-service /auth (dev-mode bypass) and exposes the resulting
+  credential as ${<alias>.jwt} and ${<alias>.nkey} in scenario
+  substitution. When false (the default), the user is materialized
+  with empty credentials — any scenario step that tries to fire a verb
+  as this user will fail at the dispatcher's credential-pick step,
+  which is the intended way to test "unauthenticated request" paths.
+go_func: VerifiedEffect
+required_services: [auth-service]

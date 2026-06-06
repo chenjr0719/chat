@@ -1,0 +1,134 @@
+scenario: history_service_paginates_messages
+source: history-service/internal/service/messages.go:26-115 + pkg/natsrouter/middleware.go:62-69 + docs/spec-cassandra-seeding-engine.md + docs/spec-array-aware-matcher.md
+
+# Phase 4.3 Draft #3 from the gap analysis.
+# The end-to-end demonstration that the new Cassandra-seed engine
+# unblocks a real read-side scenario: pre-seeds three messages at
+# distinct relative times (${now - 10m}, -5m, -1m) and fires
+# msg.history. The seed engine writes the rows; history-service reads
+# them; the reply + container log surfaces are asserted.
+#
+# (1) Array element matching — Phase 4.4 array-aware matcher
+#     (docs/spec-array-aware-matcher.md) closed the limitation.
+#     Reverse-chronological ordering is now asserted directly via
+#     Relative Order Subset Match in the reply expected block below.
+#
+# (2) Room.createdAt floor — Phase 4.5.1 closed the limitation via
+#     a per-room created_at field on the seed (validated against the
+#     Phase 4.3 ${now ± duration} grammar; resolved at sandbox.Setup
+#     against sb.StartTime). Setting created_at to ${now - 1h} drops
+#     the history-service bucket-walk floor at messages.go:80-84 to
+#     historyFloor (30 d production default), safely below the seed
+#     range. The brittle meta-override workaround is gone.
+
+seed:
+  users:
+    alice:
+      verified: true
+    bob:
+      verified: true
+  rooms:
+    - id: r-engineering
+      name: Engineering Chat
+      type: channel
+      # Born 1 hour ago. history-service computes walk floor as
+      # max(room.createdAt, now - s.historyFloor). With createdAt
+      # = now - 1h, the floor collapses to historyFloor (30d in
+      # production), safely below our seeded -10m / -5m / -1m
+      # messages. Resolved against sb.StartTime by the Phase 4.5.1
+      # buildRoomDocs path; validated by the rule-6 token check at
+      # scenario load.
+      created_at: ${now - 1h}
+  memberships:
+    alice:
+      - r-engineering
+    bob:
+      - r-engineering
+  # Three messages spaced across the past 10 minutes. The seed engine
+  # writes both messages_by_room (with auto-bucket via Pass 3 — table
+  # has bucket+created_at columns) and messages_by_id (no bucket
+  # column — auto-bucket short-circuits). Same three message-ids appear
+  # in both tables, mirroring the production denormalisation the
+  # message-worker performs at SaveMessage time
+  # (message-worker/store_cassandra.go:76-90).
+  cassandra_data:
+    - table: messages_by_room
+      rows:
+        - room_id: r-engineering
+          message_id: mPastOldest0000000000
+          msg: Oldest
+          site_id: ${site}
+          created_at: ${now - 10m}
+        - room_id: r-engineering
+          message_id: mPastMiddle0000000000
+          msg: Middle
+          site_id: ${site}
+          created_at: ${now - 5m}
+        - room_id: r-engineering
+          message_id: mPastNewest0000000000
+          msg: Newest
+          site_id: ${site}
+          created_at: ${now - 1m}
+    - table: messages_by_id
+      rows:
+        - message_id: mPastOldest0000000000
+          room_id: r-engineering
+          msg: Oldest
+          site_id: ${site}
+          created_at: ${now - 10m}
+        - message_id: mPastMiddle0000000000
+          room_id: r-engineering
+          msg: Middle
+          site_id: ${site}
+          created_at: ${now - 5m}
+        - message_id: mPastNewest0000000000
+          room_id: r-engineering
+          msg: Newest
+          site_id: ${site}
+          created_at: ${now - 1m}
+
+base_input:
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.r-engineering.${site}.msg.history
+  payload:
+    limit: 10
+  credential: ${alice.credential}
+
+cases:
+  - name: history-paginates-three-seeded-messages
+    tag: positive
+    expected:
+      # Surface 1 — reply: Phase 4.4's Relative Order Subset Match
+      # (docs/spec-array-aware-matcher.md) lets the assertion enforce
+      # the reverse-chronological ordering directly. The expected
+      # array lists the three seeded message ids in newest→oldest
+      # order; ROSM requires they appear in observed.messages in the
+      # same relative order, tolerating intervening fields per
+      # element (gstruct.MatchKeys's IgnoreExtras handles the
+      # cassandra.Message struct's other 20+ fields cleanly). A
+      # regression that flipped the clustering order would surface
+      # as "RELATIVE-ORDER VIOLATION" in the ## Failure Details
+      # section of last-run.md.
+      - location: reply
+        match:
+          body_json:
+            messages:
+              - messageId: mPastNewest0000000000
+              - messageId: mPastMiddle0000000000
+              - messageId: mPastOldest0000000000
+
+      # Surface 2 — logs: pkg/natsrouter/middleware.go:62-69 emits
+      # `slog.Info("nats request", subject=..., requestID=...,
+      # duration=...)` after every handler chain completes. Matching
+      # on (msg, subject) pins this to OUR msg.history request — any
+      # other request flowing through history-service would have a
+      # different subject. The Info log fires for both success and
+      # error replies; combined with Surface 1 (which confirms the
+      # reply carried a body_json, i.e. wasn't a sanitized error
+      # string), the pair attest the handler ran AND succeeded.
+      - location: logs_tail
+        args:
+          container: history-service
+        match:
+          msg: nats request
+          subject: chat.user.${alice.account}.request.room.r-engineering.${site}.msg.history

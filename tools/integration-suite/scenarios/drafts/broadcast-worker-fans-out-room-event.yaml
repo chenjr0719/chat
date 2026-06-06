@@ -1,0 +1,88 @@
+scenario: broadcast_worker_fans_out_room_event
+source: broadcast-worker/handler.go:76-121 + broadcast-worker/handler.go:247-286 + pkg/subject/subject.go:164 + pkg/model/event.go:152-182 + docs/spec-nats-subscribe-primitive.md
+
+# Phase 4.5 demonstration scenario — proves the new nats_subscribe
+# primitive observes the Core NATS fan-out path. broadcast-worker
+# consumes message-created events from MESSAGES_CANONICAL_${site} and
+# publishes a RoomEvent ({type: "new_message", roomId, message, …})
+# to chat.room.<roomID>.event for channel rooms
+# (handler.go:113-114 → publishChannelEvent → subject.RoomEvent).
+#
+# Without nats_subscribe, this fan-out was untestable: it lands on
+# Core NATS (no JetStream persistence, no Cassandra row, no Mongo
+# write of its own). The five pre-4.5 primitives could only observe
+# what the worker WROTE downstream (e.g. UpdateRoomLastMessage in
+# Mongo) — not what it BROADCAST. nats_subscribe closes the loop.
+#
+# Note on event-type naming: the spec's hypothetical §6.3 example
+# used "room.created" — that's actually the message-level Type
+# constant (model.MessageTypeRoomCreated = "room_created"). The
+# RoomEvent wrapper that broadcast-worker publishes to Core NATS
+# always uses Type=RoomEventNewMessage ("new_message") for created
+# messages (event.go:155). This scenario asserts the wrapper's type
+# field, matching what production actually puts on the wire.
+
+seed:
+  users:
+    alice:
+      verified: true
+    bob:
+      verified: true
+  rooms:
+    - id: r-engineering
+      name: Engineering Chat
+      type: channel
+  # Both users subscribed so the gatekeeper accepts alice's send.
+  # broadcast-worker reads room metadata from Mongo (sandbox_rooms.go
+  # writes it at Phase 4.2 Step 8) and fans the resulting RoomEvent
+  # to chat.room.r-engineering.event.
+  memberships:
+    alice:
+      - r-engineering
+    bob:
+      - r-engineering
+
+base_input:
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-engineering.${site}.msg.send
+  payload:
+    # Same id-shape rationale as Draft #1
+    # (message-send-persists-canonical-and-cassandra.yaml):
+    # gatekeeper enforces 20-char base62 via idgen.IsValidMessageID
+    # at handler.go:168.
+    id: mBroadcastEvent00001
+    content: Hello broadcast subscribers
+    # Same UUIDv7 hardcode rationale as Draft #1 — payload
+    # substitution runs BEFORE the verb fires, so a dynamic ${...}
+    # token would resolve empty here.
+    requestId: 01970000-0000-7000-8000-000000000301
+  credential: ${alice.credential}
+
+cases:
+  - name: room-event-fans-out-to-core-nats-after-msg-send
+    tag: positive
+    expected:
+      # nats_subscribe — the 6th universal primitive. case_runner Step 3b
+      # opens the Core NATS subscription BEFORE jetstream_publish fires
+      # (via the Warmer interface) so the broadcast that arrives a few
+      # milliseconds after gatekeeper → message-worker → broadcast-worker
+      # is captured. Phase 4.4 ROSM matches the received[] slice
+      # element-wise: extras (sender enrichment, mention parsing,
+      # roomName, userCount, etc.) tolerated via gstruct.IgnoreExtras;
+      # only the fields the author cares about are asserted.
+      - location: nats_subscribe
+        args:
+          subject: chat.room.r-engineering.event
+        match:
+          received:
+            - body_json:
+                type: new_message
+                roomId: r-engineering
+                roomType: channel
+                siteId: ${site}
+                lastMsgId: mBroadcastEvent00001
+                message:
+                  id: mBroadcastEvent00001
+                  roomId: r-engineering
+                  userAccount: ${alice.account}
+                  content: Hello broadcast subscribers

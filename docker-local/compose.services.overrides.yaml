@@ -1,0 +1,55 @@
+name: chat-local-services
+
+# Suite-only env overrides for compose.services.yaml — routes every Mongo +
+# Cassandra connection through chat-local-toxiproxy so the integration-suite
+# can inject partitions via the Toxiproxy admin API.
+#
+# Defined as a SEPARATE overlay file (rather than redefining services inline
+# inside compose.services.yaml) because Docker Compose disallows redefining
+# a service pulled in via `include:` in the same file on some v2 builds.
+# The Makefile chains both files with `-f compose.services.yaml -f
+# compose.services.overrides.yaml` so the override always applies.
+#
+# Map-form environment is intentional: list-form (- KEY=value) merges with
+# the included service's list and keeps the original MONGO_URI alongside
+# this one. Map-form replaces by key, guaranteeing the toxiproxy URI wins.
+
+services:
+  broadcast-worker:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017
+
+  history-service:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017
+      CASSANDRA_HOSTS: chat-local-toxiproxy
+
+  inbox-worker:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017
+
+  message-gatekeeper:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017
+
+  message-worker:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017
+      CASSANDRA_HOSTS: chat-local-toxiproxy
+
+  notification-worker:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017
+
+  room-service:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017
+      CASSANDRA_HOSTS: chat-local-toxiproxy
+
+  room-worker:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017
+
+  search-service:
+    environment:
+      MONGO_URI: mongodb://chat-local-toxiproxy:27017

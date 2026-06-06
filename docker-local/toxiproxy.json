@@ -1,0 +1,20 @@
+[
+  {
+    "name": "MongoProxy",
+    "listen": "0.0.0.0:27017",
+    "upstream": "chat-local-mongodb:27017",
+    "enabled": true
+  },
+  {
+    "name": "CassandraProxy",
+    "listen": "0.0.0.0:9042",
+    "upstream": "chat-local-cassandra:9042",
+    "enabled": true
+  },
+  {
+    "name": "WANProxy",
+    "listen": "0.0.0.0:4222",
+    "upstream": "chat-local-nats:4222",
+    "enabled": true
+  }
+]

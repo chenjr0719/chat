@@ -1,0 +1,36 @@
+# Reader: logs_tail  (universal primitive — Phase 4.0)
+#
+# Universal container log primitive. Each YAML assertion declares the
+# target container:
+#
+#   expected:
+#     - location: logs_tail
+#       args:
+#         container: room-service
+#         # service: room-service          # optional; defaults to container
+#       match:
+#         msg: "create-room failed"
+#         error: "channel name must be at most 100 characters"
+#
+# Stateful: each unique container is tailed by exactly one underlying
+# ContainerLogsReader + StreamPoller pair. Multiple assertions on the
+# same container share one tail. Closing the poller closes every
+# cached tail.
+#
+# Emit shape (one event per log line):
+#   parsed slog JSON entry (map[string]any). Common fields: time,
+#   level, msg, plus service-set context fields (roomId, error,
+#   operation, etc.). matches_shape only enforces what the scenario
+#   asks for; extras are ignored.
+#
+# Timestamp: log entry's `time` field (RFC3339); falls back to
+# wall-clock receive time when missing/unparseable.
+
+location: logs_tail
+owners:    []
+timestamp_source: log_time_field
+shape:    map[string]any
+executor: LogsTailPoller
+
+events: []
+ignore: []

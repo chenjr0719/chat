@@ -1,0 +1,49 @@
+# Reader: nats_subscribe  (universal primitive — Core NATS subscribe)
+#
+# Universal Core NATS subscribe primitive. Each YAML assertion declares
+# the subject to subscribe to at run time:
+#
+#   expected:
+#     - location: nats_subscribe
+#       args:
+#         subject: chat.room.${input.payload.roomId}.event
+#       match:
+#         received:
+#           - subject: chat.room.${input.payload.roomId}.event
+#             event_type: room.created
+#
+# The subject accepts NATS wildcards (`*` single-token, `>` multi-token
+# tail). Substitution: args goes through the same Substitute pipeline
+# as match — `${alice.account}`, `${site}`, `${input.payload.<key>}`,
+# etc. all resolve before subscribe.
+#
+# Warmer semantics: Core NATS has no replay (unlike JetStream's
+# DeliverByStartTime). The subscription MUST open BEFORE the verb
+# fires, so this poller implements the Warmer interface — the case
+# runner calls Warm() in Step 3b of the case loop, before
+# Dispatcher.Fire. Without Warm, every message that arrives before
+# the first poll is lost.
+#
+# State model: per-subject cached subscription shared across cases in
+# one scenario. The reader owns a synchronised queue; each PollFn call
+# drains new messages into a monotonic accumulator and emits ONE Event
+# whose Payload (readers.NATSSubscribePayload) carries the full
+# accumulated `received` slice. MatchShape's array branch handles the
+# element-wise assertion.
+#
+# Teardown: Sandbox.Teardown unsubscribes every cached subject via the
+# cleanup func returned by RegisterBuiltinPollers.
+#
+# Degrade-on-missing-creds: if the admin NATS connection is nil
+# (NATS_CREDS_FILE unset), Warm + PollFn both warn and return nothing
+# — the assertion will time out with a clear "no admin NATS
+# connection" reason.
+
+location: nats_subscribe
+owners:    []   # n/a — owner is per-subject pattern, not fixed
+timestamp_source: handler-receive walltime
+shape:    readers.NATSSubscribePayload
+executor: NATSSubscribePoller
+
+events: []
+ignore: []

@@ -1,0 +1,28 @@
+scenario: empty_create_request_rejected
+source: room-service/handler.go:209-211 + pkg/model/model.go (ErrorResponse)
+
+seed:
+  users:
+    requester:
+      verified: true
+
+base_input:
+  verb: nats_request
+  subject: chat.user.${requester.account}.request.room.${site}.create
+  payload: {}
+  credential: ${requester.credential}
+
+cases:
+  - name: empty-payload-rejected
+    tag: negative
+    expected:
+      - location: reply
+        match:
+          body_json:
+            error: "request must include at least one of users, orgs, channels, or name"
+      - location: logs_tail
+        args:
+          container: room-service
+        match:
+          msg: "create-room failed"
+          error: "request must include at least one of users, orgs, channels, or name"

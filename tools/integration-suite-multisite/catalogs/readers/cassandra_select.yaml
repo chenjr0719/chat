@@ -1,0 +1,38 @@
+# Reader: cassandra_select  (universal primitive — Phase 4.0)
+#
+# Universal CQL SELECT primitive. Each YAML assertion declares the
+# query string + optional bind parameters at run time:
+#
+#   expected:
+#     - location: cassandra_select
+#       args:
+#         query: "SELECT JSON * FROM messages_by_room WHERE created_at >= ? ALLOW FILTERING"
+#         # params: [<startTime>]      # auto-bound when query has a single `?` and params is unset
+#       match:
+#         msg: "hello"
+#
+# The poller binds args.params verbatim if supplied; otherwise, if the
+# query contains exactly one `?` placeholder, it auto-binds
+# [startTime] (the common "rows since T_open" pattern). Multi-`?`
+# queries without explicit args.params surface as a slog warning at
+# bind time and the assertion times out (loud-fail).
+#
+# Rows come back via `SELECT JSON *` and decode to map[string]any with
+# snake_case keys per CQL convention (see pkg/model/cassandra/*.go for
+# the Go-side struct definitions).
+#
+# Bucket math: the production message-worker partitions by
+# (room_id, bucket) where bucket = floor(created_at_ms / windowMs) *
+# windowMs. The poller exposes BucketAt(t) via the configured
+# msgbucket.Sizer (window matches MESSAGE_BUCKET_HOURS) so future
+# substitution tokens (or scenario-side helpers) can compute partition
+# values without re-deriving the math.
+
+location: cassandra_select
+owners:    []
+timestamp_source: poll_walltime
+shape:    map[string]any
+executor: CassandraSelectPoller
+
+events: []
+ignore: []

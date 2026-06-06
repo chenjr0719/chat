@@ -1,0 +1,16 @@
+name: jetstream_publish
+description: |
+  Publishes a payload to a JetStream subject as the given credential.
+  Used by scenarios that need to inject canonical events directly
+  (bypassing the upstream service that would normally publish them) —
+  e.g. testing room-worker's handling of canonical events without
+  going through room-service first.
+input_shape:
+  subject:    { type: string, required: true }
+  payload:    { type: bytes,  required: true }
+  credential: { type: ref,    required: true }
+transport_effect_template:
+  - "ack from JetStream within 5s (with stream + sequence info), OR a transport error class"
+  - "outbound publish carries X-Request-ID (UUIDv7) header per CLAUDE.md §3"
+  - "outbound publish carries traceparent header set by the dispatcher"
+executor: JetStreamPublishExecutor

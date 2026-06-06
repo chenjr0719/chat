@@ -1,0 +1,12 @@
+mishap: mongo-partition-500ms
+axis: p
+trigger: cascade-wide
+class: resilience
+factory: MongoPartitionFactory
+eligible: scenario-uses-mongo
+produces_noise: disconnect_noise
+notes: |
+  Toxiproxy proxy.Disable() on MongoProxy for 500ms when all in-scope
+  actors have reached the first mongo-using pod. Closes existing TCP
+  connections and refuses new dials — exercises the Mongo driver's
+  fast-fail / reconnect path. Produces disconnect_noise.

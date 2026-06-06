@@ -1,0 +1,49 @@
+scenario: Create Room Sandbox
+source: design-doc#room-creation (room-service/handler.go:296-374)
+
+seed:
+  users:
+    alice:
+      verified: true
+    bob:
+      verified: true
+
+base_input:
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.${site}.create
+  payload:
+    name: Engineering Chat
+    users: ["${alice.account}", "${bob.account}"]
+  credential: ${alice.credential}
+
+cases:
+  - name: happy-path-room-created
+    tag: positive
+    expected:
+      - location: reply
+        match:
+          body_json:
+            status: accepted
+            roomType: channel
+      - location: mongo_find
+        args:
+          collection: rooms
+          filter:
+            name: "Engineering Chat"
+        match:
+          name: Engineering Chat
+          type: channel
+          siteId: ${site}
+
+  - name: withstands-mongo-partition
+    tag: positive
+    mishap: mongo-partition-500ms
+    expected:
+      - location: mongo_find
+        args:
+          collection: rooms
+          filter:
+            name: "Engineering Chat"
+        match:
+          name: Engineering Chat
+        timeout: 10s
