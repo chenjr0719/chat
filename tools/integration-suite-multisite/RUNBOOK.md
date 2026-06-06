@@ -123,6 +123,7 @@ docker network prune -f                   # remove orphaned networks
 | **At-rest encryption disabled** | `pkg/atrest` defaults `ATREST_ENABLED=true` and requires `VAULT_ADDR` at boot. The multi-site stack doesn't run Vault, so `serviceEnv` sets `ATREST_ENABLED=false` for every service. If you wire Vault in for a follow-up, drop the override from `serviceEnv` common env. |
 | **Exit-code interpretation under `tee`** | A piped `tee` masks `make`'s exit status — `echo "exit=$?"` after the pipe sees `tee`'s exit, not the runner's. Drop the `tee` for the one-glance check, or use `set -o pipefail`. |
 | **`last-run.md` missing on infra failure** | If the stack fails to boot, the scenario walker never runs and `docs/integration-suite-multisite/last-run.md` is not written. Check `make`'s last lines for the panic site — it'll name the failing service. |
+| **Silent hang at `waiting for stream`** | If the runner sits at `integration-suite: waiting for stream` for more than 30 s, the admin NATS connection couldn't authenticate against operator-mode NATS. `WaitForStream` has a 30 s deadline; it'll fail loud after that. If you see no error after 30 s, check the admin conn is being constructed with `nats.UserCredentials(docker-local/backend.creds)`. |
 
 ---
 

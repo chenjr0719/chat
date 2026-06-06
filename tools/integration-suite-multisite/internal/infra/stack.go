@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -228,7 +229,7 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 		s.TerminateAll(context.Background())
 		return nil, fmt.Errorf("infra.Up: services (phase A): %w", err)
 	}
-	if err := waitForRoomsStreams(ctx, s.deps.natsURLBySite["site-a"]); err != nil {
+	if err := waitForRoomsStreams(ctx, s.deps.natsURLBySite["site-a"], repoRoot); err != nil {
 		s.TerminateAll(context.Background())
 		return nil, fmt.Errorf("infra.Up: wait ROOMS streams: %w", err)
 	}
@@ -273,18 +274,32 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 // in their respective JetStream domains. Called between phase-A service
 // boot (room-worker) and phase-B service boot (notification-worker etc.)
 // so cross-service consumer creation doesn't race the stream owner.
-func waitForRoomsStreams(ctx context.Context, natsURL string) error {
-	admin, err := nats.Connect(natsURL, nats.Name("integration-suite/rooms-wait-admin"))
+//
+// The admin conn carries the backend creds because NATS is in operator
+// mode — an unauthenticated connect succeeds at TCP but JetStream API
+// calls (js.Stream) are silently denied, which would loop forever
+// against a 404-look-alike.
+func waitForRoomsStreams(ctx context.Context, natsURL, repoRoot string) error {
+	credsFile := filepath.Join(repoRoot, "docker-local", "backend.creds")
+	admin, err := nats.Connect(
+		natsURL,
+		nats.Name("integration-suite/rooms-wait-admin"),
+		nats.UserCredentials(credsFile),
+	)
 	if err != nil {
 		return fmt.Errorf("rooms wait: connect nats: %w", err)
 	}
 	defer admin.Drain() //nolint:errcheck
 
-	if err := WaitForStream(ctx, admin, "site-a", "ROOMS_site-a"); err != nil {
-		return fmt.Errorf("rooms wait: ROOMS_site-a: %w", err)
-	}
-	if err := WaitForStream(ctx, admin, "site-b", "ROOMS_site-b"); err != nil {
-		return fmt.Errorf("rooms wait: ROOMS_site-b: %w", err)
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	for _, site := range []string{"site-a", "site-b"} {
+		slog.Info("integration-suite: waiting for stream", "stream", "ROOMS_"+site, "domain", site)
+		if err := WaitForStream(waitCtx, admin, site, "ROOMS_"+site); err != nil {
+			return fmt.Errorf("rooms wait: ROOMS_%s: %w", site, err)
+		}
+		slog.Info("integration-suite: stream ready", "stream", "ROOMS_"+site)
 	}
 	return nil
 }
@@ -292,17 +307,26 @@ func waitForRoomsStreams(ctx context.Context, natsURL string) error {
 // applyFederation waits for INBOX streams to be created by inbox-worker
 // on both sites and then applies the federation source specs.
 func applyFederation(ctx context.Context, natsURL, repoRoot, catalogPath string) error {
-	admin, err := nats.Connect(natsURL, nats.Name("integration-suite/federation-admin"))
+	credsFile := filepath.Join(repoRoot, "docker-local", "backend.creds")
+	admin, err := nats.Connect(
+		natsURL,
+		nats.Name("integration-suite/federation-admin"),
+		nats.UserCredentials(credsFile),
+	)
 	if err != nil {
 		return fmt.Errorf("federation: connect nats: %w", err)
 	}
 	defer admin.Drain() //nolint:errcheck
 
-	if err := WaitForStream(ctx, admin, "site-a", "INBOX_site-a"); err != nil {
-		return fmt.Errorf("federation: wait INBOX_site-a: %w", err)
-	}
-	if err := WaitForStream(ctx, admin, "site-b", "INBOX_site-b"); err != nil {
-		return fmt.Errorf("federation: wait INBOX_site-b: %w", err)
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	for _, site := range []string{"site-a", "site-b"} {
+		slog.Info("integration-suite: waiting for stream", "stream", "INBOX_"+site, "domain", site)
+		if err := WaitForStream(waitCtx, admin, site, "INBOX_"+site); err != nil {
+			return fmt.Errorf("federation: wait INBOX_%s: %w", site, err)
+		}
+		slog.Info("integration-suite: stream ready", "stream", "INBOX_"+site)
 	}
 
 	specs, err := LoadFederationSources(catalogPath)
