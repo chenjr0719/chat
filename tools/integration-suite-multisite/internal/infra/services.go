@@ -151,8 +151,11 @@ func serviceEnv(svc, siteID, authSigningKey string, msgBucketHours int, _, _, va
 			"AUTH_SIGNING_KEY": authSigningKey,
 		}
 	case "broadcast-worker":
+		// VALKEY_ADDRS is required at boot — broadcast-worker/main.go
+		// panics if encryption is enabled and VALKEY_ADDRS is empty.
 		return merge(map[string]string{
 			"BOOTSTRAP_STREAMS": "true",
+			"VALKEY_ADDRS":      valkeyAddr,
 		})
 	case "history-service":
 		extras := map[string]string{
@@ -182,8 +185,11 @@ func serviceEnv(svc, siteID, authSigningKey string, msgBucketHours int, _, _, va
 		}
 		return merge(extras)
 	case "notification-worker":
+		// VALKEY_ADDRS is required at boot — notification-worker/main.go
+		// rejects an empty value during config parse.
 		return merge(map[string]string{
 			"BOOTSTRAP_STREAMS": "true",
+			"VALKEY_ADDRS":      valkeyAddr,
 		})
 	case "room-service":
 		return merge(map[string]string{
