@@ -94,7 +94,7 @@ type SandboxDeps struct {
 	// Single conn multiplexes both JS domains via WithDomain(site).
 	// Nil tolerated — scenarios that don't reference jetstream_consume
 	// still run; ones that do get a slog warning + assertion timeout.
-	AdminConn *nats.Conn
+	AdminConns map[string]*nats.Conn
 
 	// MatcherReg is the matchers registry MatchShape inherits when
 	// runScenario wraps each expected[].match into a Gomega matcher. Nil
@@ -324,7 +324,7 @@ func (sb *Sandbox) Setup(ctx context.Context) error {
 		Sites:               sb.Deps.MongoBySite,
 		Cassandra:           sb.Deps.Cassandra,
 		MessageBucketWindow: sb.Deps.MessageBucketWindow,
-		AdminConn:           sb.Deps.AdminConn,
+		AdminConns:          sb.Deps.AdminConns,
 		ReplyReader:         sb.Deps.ReplyReader,
 		StartTime:           sb.StartTime,
 	})

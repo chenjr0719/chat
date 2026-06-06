@@ -37,11 +37,14 @@ type BuiltinDeps struct {
 	// to 24h.
 	MessageBucketWindow time.Duration
 
-	// AdminConn is the admin NATS connection for `jetstream_consume`
-	// (ephemeral consumers on operator-owned streams). Nil when
-	// NATSCredsFile is unset; jetstream_consume registers but warns
-	// at PollFn time.
-	AdminConn *nats.Conn
+	// AdminConns holds one admin NATS connection per site, keyed by
+	// site name. jetstream_consume picks by site so JS API calls hit
+	// the local domain — the supercluster gateway doesn't carry
+	// $JS.<domain>.API across. nats_subscribe takes the site-a entry
+	// (Core NATS subjects DO traverse the gateway, one conn is enough).
+	// Empty when NATSCredsFile is unset; primitives that depend on it
+	// warn at PollFn time.
+	AdminConns map[string]*nats.Conn
 
 	// ReplyReader is the dispatcher-fed singleton that backs `reply`.
 	// The dispatcher injects per-fire outcomes into this reader; the
@@ -67,9 +70,12 @@ type BuiltinDeps struct {
 // (the assertion times out, the failure detail names the missing dep).
 func RegisterBuiltinPollers(reg *Registry, deps *BuiltinDeps) (cleanup func(), err error) {
 	// Stateful primitives we need to clean up at teardown.
-	jsPoller := NewJetStreamConsumePoller(deps.AdminConn, deps.StartTime)
+	jsPoller := NewJetStreamConsumePoller(deps.AdminConns, deps.StartTime)
 	logsPoller := NewLogsTailPoller(deps.StartTime)
-	natsSubPoller := NewNATSSubscribePoller(deps.AdminConn)
+	// nats_subscribe uses one conn — Core NATS subjects route across
+	// the gateway so site-a's admin conn observes site-b publishes too.
+	// Pick site-a by convention; any non-nil conn works.
+	natsSubPoller := NewNATSSubscribePoller(deps.AdminConns["site-a"])
 
 	cleanup = func() {
 		jsPoller.Close()

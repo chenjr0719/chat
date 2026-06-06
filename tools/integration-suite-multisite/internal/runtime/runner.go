@@ -100,8 +100,8 @@ type session struct {
 	Catalog    *catalog.Catalog
 	MongoSiteA *mongo.Client
 	MongoSiteB *mongo.Client
-	AdminConn  *nats.Conn     // nil-tolerant; jetstream_consume + nats_subscribe degrade
-	Cassandra  *gocql.Session // nil-tolerant
+	AdminConns map[string]*nats.Conn // per-site; empty-tolerant; jetstream_consume + nats_subscribe degrade
+	Cassandra  *gocql.Session        // nil-tolerant
 	Perf       *PerformanceStore
 	Report     *RunReport
 
@@ -227,20 +227,27 @@ func buildSession(ctx context.Context, cfg *Config) (*session, error) {
 	// need per-location reader handles, just the backend connections.
 	replyReader := readers.NewNATSReplyReader()
 
-	// Optional admin NATS connection — used by the `jetstream_consume`
-	// primitive to open per-args ephemeral consumers at scenario time.
-	// Single admin conn drives both JS domains via WithDomain(site) at use site.
-	// Disabled when NATSCredsFile is unset; jetstream_consume still
-	// registers but warns at PollFn time.
-	var adminConn *nats.Conn
+	// Optional admin NATS connections — one per site so jetstream_consume's
+	// JS API queries hit the LOCAL JetStream domain. The supercluster
+	// gateway routes app traffic but does NOT carry $JS.<domain>.API
+	// across sites, so a single conn can only drive its local domain.
+	// adminConns[site-a] also doubles as the conn for nats_subscribe
+	// (Core NATS subjects do traverse the gateway). Disabled when
+	// NATSCredsFile is unset; pollers register but warn at PollFn time.
+	adminConns := map[string]*nats.Conn{}
 	if cfg.NATSCredsFile != "" {
-		conn, err := nats.Connect(cfg.SiteA.NATSURL, nats.UserCredentials(cfg.NATSCredsFile), nats.Name("integration-suite/runner"))
-		if err != nil {
-			_ = mongoClientA.Disconnect(ctx)
-			_ = mongoClientB.Disconnect(ctx)
-			return nil, fmt.Errorf("nats admin connect: %w", err)
+		for site, url := range map[string]string{"site-a": cfg.SiteA.NATSURL, "site-b": cfg.SiteB.NATSURL} {
+			conn, err := nats.Connect(url, nats.UserCredentials(cfg.NATSCredsFile), nats.Name("integration-suite/runner-"+site))
+			if err != nil {
+				_ = mongoClientA.Disconnect(ctx)
+				_ = mongoClientB.Disconnect(ctx)
+				for _, c := range adminConns {
+					_ = c.Drain()
+				}
+				return nil, fmt.Errorf("nats admin connect %s: %w", site, err)
+			}
+			adminConns[site] = conn
 		}
-		adminConn = conn
 	} else {
 		slog.Warn("NATS_CREDS_FILE not set; jetstream_consume disabled (scenarios that reference it will warn + time out at assertion time)")
 	}
@@ -260,8 +267,8 @@ func buildSession(ctx context.Context, cfg *Config) (*session, error) {
 		if err != nil {
 			_ = mongoClientA.Disconnect(ctx)
 			_ = mongoClientB.Disconnect(ctx)
-			if adminConn != nil {
-				_ = adminConn.Drain()
+			for _, c := range adminConns {
+				_ = c.Drain()
 			}
 			return nil, fmt.Errorf("cassandra connect: %w", err)
 		}
@@ -288,8 +295,8 @@ func buildSession(ctx context.Context, cfg *Config) (*session, error) {
 		if err != nil {
 			_ = mongoClientA.Disconnect(ctx)
 			_ = mongoClientB.Disconnect(ctx)
-			if adminConn != nil {
-				_ = adminConn.Drain()
+			for _, c := range adminConns {
+				_ = c.Drain()
 			}
 			if cassSess != nil {
 				cassutil.Close(cassSess)
@@ -315,7 +322,7 @@ func buildSession(ctx context.Context, cfg *Config) (*session, error) {
 		MongoBySite:         mongoBySite,
 		AuthURLBySite:       authURLBySite,
 		Cassandra:           cassSess,
-		AdminConn:           adminConn,
+		AdminConns:          adminConns,
 		MessageBucketWindow: messageBucketWindow,
 		Dispatcher:          dispatcher,
 		SeedEffectReg:       seedEffectReg,
@@ -335,7 +342,7 @@ func buildSession(ctx context.Context, cfg *Config) (*session, error) {
 		Catalog:    cat,
 		MongoSiteA: mongoClientA,
 		MongoSiteB: mongoClientB,
-		AdminConn:  adminConn,
+		AdminConns: adminConns,
 		Cassandra:  cassSess,
 		Perf:       perf,
 		Report:     report,
@@ -366,8 +373,8 @@ func drainSession(ctx context.Context, sess *session) {
 	if sess.MongoSiteB != nil {
 		_ = sess.MongoSiteB.Disconnect(ctx)
 	}
-	if sess.AdminConn != nil {
-		_ = sess.AdminConn.Drain()
+	for _, c := range sess.AdminConns {
+		_ = c.Drain()
 	}
 	if sess.Cassandra != nil {
 		cassutil.Close(sess.Cassandra)

@@ -43,8 +43,8 @@ type runnerDeps struct {
 	Cfg            *Config
 	MongoBySite    map[string]*mongo.Database
 	AuthURLBySite  map[string]string
-	Cassandra      *gocql.Session // nil disables cassandra_select; shared across sites
-	AdminConn      *nats.Conn     // nil disables jetstream_consume
+	Cassandra      *gocql.Session        // nil disables cassandra_select; shared across sites
+	AdminConns     map[string]*nats.Conn // per-site; empty disables jetstream_consume
 	Dispatcher     *Dispatcher
 	SeedEffectReg  *seedeffect.Registry
 	MatcherReg     *matchers.Registry
@@ -85,7 +85,7 @@ func (d *runnerDeps) toSandboxDeps() *SandboxDeps {
 		AuthURLBySite:       d.AuthURLBySite,
 		Cassandra:           d.Cassandra,
 		CassandraKeyspace:   d.Cfg.CassandraKeyspace,
-		AdminConn:           d.AdminConn,
+		AdminConns:          d.AdminConns,
 		MessageBucketWindow: d.MessageBucketWindow,
 		Chaos:               d.ChaosEngine,
 		Dispatcher:          d.Dispatcher,

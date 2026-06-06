@@ -4,9 +4,7 @@ package infra
 
 import (
 	"context"
-	"io"
 	"net"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
