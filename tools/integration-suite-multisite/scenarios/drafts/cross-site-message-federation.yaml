@@ -51,7 +51,7 @@ input:
   payload:
     # 20-char base62 message ID per message-gatekeeper's
     # idgen.IsValidMessageID check (handler.go:168 in single-site).
-    id: mCrossSiteFed00000001
+    id: mCrossSiteFed0000001
     content: Hello bob from site-a
     # Hyphenated UUID required by gatekeeper's payload-level
     # requestId check (handler.go:163 -> idgen.IsValidUUID).
@@ -72,7 +72,7 @@ expected:
         event: created
         siteId: site-a
         message:
-          id: mCrossSiteFed00000001
+          id: mCrossSiteFed0000001
           roomId: r-shared
           userAccount: ${alice.account}
           content: Hello bob from site-a
@@ -92,6 +92,6 @@ expected:
     match:
       body_json:
         message:
-          id: mCrossSiteFed00000001
+          id: mCrossSiteFed0000001
           roomId: r-shared
     timeout: 15s
