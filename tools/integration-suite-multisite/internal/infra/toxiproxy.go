@@ -6,32 +6,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// startToxiproxy launches the Phase 1 Toxiproxy container on the
-// shared network, mounting docker-local/toxiproxy.json so the three
-// pre-provisioned proxies (MongoProxy, CassandraProxy, WANProxy) are
-// available the moment the admin /version endpoint answers.
+// startToxiproxy launches the multi-site Toxiproxy container on the
+// shared network with NO preloaded config. CreateSiteNamedProxies
+// (called once Toxiproxy is up) POSTs all 6 site-named proxies via
+// the admin API — that is the single source of truth for the proxy
+// set in the multi-site stack.
 //
-// Returns the container handle and the host-mapped admin URL the
-// chaos engine uses to toggle proxies.
-func startToxiproxy(ctx context.Context, networkName, repoRoot string) (testcontainers.Container, string, error) {
-	cfgPath := filepath.Join(repoRoot, "docker-local", "toxiproxy.json")
+// Returns the container handle and the host-mapped admin URL.
+func startToxiproxy(ctx context.Context, networkName string) (testcontainers.Container, string, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        "ghcr.io/shopify/toxiproxy:2.9.0",
-		ExposedPorts: []string{"8474/tcp", "27017/tcp", "9042/tcp"},
-		Cmd:          []string{"-host=0.0.0.0", "-config=/etc/toxiproxy/toxiproxy.json"},
+		ExposedPorts: []string{"8474/tcp"},
+		Cmd:          []string{"-host=0.0.0.0"},
 		Networks:     []string{networkName},
 		NetworkAliases: map[string][]string{
 			networkName: {"chat-local-toxiproxy"},
-		},
-		Files: []testcontainers.ContainerFile{
-			{HostFilePath: cfgPath, ContainerFilePath: "/etc/toxiproxy/toxiproxy.json", FileMode: 0o444},
 		},
 		WaitingFor: wait.ForHTTP("/version").
 			WithPort("8474/tcp").

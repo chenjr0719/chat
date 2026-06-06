@@ -170,7 +170,7 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 	}
 
 	// Step 5: Toxiproxy (after Mongo + Cassandra so its upstreams resolve).
-	tc, admin, err := startToxiproxy(ctx, nw.Name, repoRoot)
+	tc, admin, err := startToxiproxy(ctx, nw.Name)
 	if err != nil {
 		s.TerminateAll(context.Background())
 		return nil, fmt.Errorf("infra.Up: toxiproxy: %w", err)
