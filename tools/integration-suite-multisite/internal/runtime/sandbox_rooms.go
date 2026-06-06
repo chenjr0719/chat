@@ -59,8 +59,60 @@ func insertSeededRooms(ctx context.Context, sb *Sandbox) error {
 				return fmt.Errorf("insert room_members for %s: %w", siteName, err)
 			}
 		}
+
+		// Cross-site projection: when a membership references an alias
+		// whose home site is a DIFFERENT site, the room's site needs
+		// to know about that user as a "remote member". Production code
+		// (room-worker findRemoteSitesForAccounts) reads each member's
+		// `siteId` from this site's `users` collection to decide
+		// whether to publish to OUTBOX. Without the stub, the federation
+		// trigger never fires.
+		remoteStubs := buildRemoteUserStubs(memberships, sb.Users, siteName)
+		if len(remoteStubs) > 0 {
+			if _, err := db.Collection("users").InsertMany(ctx, remoteStubs); err != nil {
+				return fmt.Errorf("insert remote-user stubs for %s: %w", siteName, err)
+			}
+		}
 	}
 	return nil
+}
+
+// buildRemoteUserStubs returns one minimal `users` doc per alias whose
+// HomeSite differs from siteID. The doc carries `siteId` = the alias's
+// HOME site (not this site) — that's the signal production code reads
+// to classify the user as remote and publish to OUTBOX for federation.
+// Returned slice is sorted by alias for byte-stable document order.
+func buildRemoteUserStubs(
+	memberships map[string][]scenario.SeedMembership,
+	users map[string]*seedeffect.SeedUser,
+	siteID string,
+) []any {
+	aliasSet := map[string]struct{}{}
+	for alias := range memberships {
+		aliasSet[alias] = struct{}{}
+	}
+	aliases := make([]string, 0, len(aliasSet))
+	for a := range aliasSet {
+		aliases = append(aliases, a)
+	}
+	sort.Strings(aliases)
+
+	out := make([]any, 0)
+	for _, alias := range aliases {
+		u, ok := users[alias]
+		if !ok || u.HomeSite == "" || u.HomeSite == siteID {
+			continue
+		}
+		out = append(out, bson.M{
+			"_id":         u.ID,
+			"account":     u.Account,
+			"siteId":      u.HomeSite,
+			"engName":     u.Account,
+			"chineseName": u.Account,
+			"verified":    u.Verified,
+		})
+	}
+	return out
 }
 
 // indexRoomsByID returns a roomID → SeedRoom lookup. Validation already

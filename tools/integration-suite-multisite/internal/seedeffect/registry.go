@@ -35,6 +35,7 @@ type SeedUser struct {
 	Alias    string
 	Account  string
 	ID       string
+	HomeSite string // site whose seed.users block declared this alias; cross-site federation tests use this to project remote-user stubs
 	JWT      string
 	NkeySeed string
 	Verified bool

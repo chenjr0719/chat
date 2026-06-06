@@ -235,9 +235,10 @@ func (sb *Sandbox) Setup(ctx context.Context) error {
 
 		for alias, flags := range siteBlock.Seed.Users {
 			u := &seedeffect.SeedUser{
-				Alias:   alias,
-				Account: alias,
-				ID:      "u-" + alias,
+				Alias:    alias,
+				Account:  alias,
+				ID:       "u-" + alias,
+				HomeSite: siteName,
 			}
 
 			// Mint a NATS identity. AuthURL empty is surfaced loudly so the
