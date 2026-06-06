@@ -191,7 +191,13 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 		site := site
 		natsURL := s.deps.natsURLBySite[site]
 		mongoURI := s.deps.mongoURIBySite[site]
-		valkeyAddr := s.deps.valkeyAddrBySite[site]
+		// Services must dial Valkey via the docker network alias
+		// (valkey-<site>:6379), not the host-mapped addr returned by
+		// startValkey() — from inside a container, the host-mapped
+		// addr resolves to the container's own loopback and the
+		// connection fails. The runner-side s.deps.valkeyAddrBySite
+		// retains the host-mapped form for host-driven assertions.
+		valkeyAddr := "valkey-" + site + ":6379"
 		for _, svc := range services {
 			svc := svc
 			g2.Go(func() error {

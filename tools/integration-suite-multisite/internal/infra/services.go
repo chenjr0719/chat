@@ -198,9 +198,15 @@ func serviceEnv(svc, siteID, authSigningKey string, msgBucketHours int, _, _, va
 			"VALKEY_ADDRS":      valkeyAddr,
 		})
 	case "room-service":
+		// SITE_URL is required by room-service/main.go (caarlos0/env)
+		// and must be an absolute URL with scheme + host. Used by
+		// handler.go's buildTabURL for shared room content URLs.
+		// We don't exercise tab URLs in scenarios; a per-site placeholder
+		// satisfies the validator.
 		return merge(map[string]string{
 			"MAX_ROOM_SIZE":           "1000",
 			"MAX_BATCH_SIZE":          "500",
+			"SITE_URL":                "http://chat-" + siteID,
 			"VALKEY_ADDRS":            valkeyAddr,
 			"VALKEY_KEY_GRACE_PERIOD": "24h",
 			"CASSANDRA_HOSTS":         cassandraHost,
