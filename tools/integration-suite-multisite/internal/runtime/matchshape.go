@@ -48,6 +48,7 @@ type shapeMatcher struct {
 	// matchers are documented as single-goroutine).
 	lastEventCount int
 	bestReason     string // closest mismatch reason; empty if 0 events
+	bestIdx        int    // index of the closest-mismatch event; -1 if none
 	matchedIdx     int    // index of the event that matched (for negated msg)
 }
 
@@ -58,6 +59,7 @@ func (m *shapeMatcher) Match(actual any) (bool, error) {
 	}
 	m.lastEventCount = len(events)
 	m.bestReason = ""
+	m.bestIdx = -1
 	m.matchedIdx = -1
 
 	shape, err := m.reg.Get("matches_shape")
@@ -79,6 +81,7 @@ func (m *shapeMatcher) Match(actual any) (bool, error) {
 		// could rank by "fields-correct" count.
 		if m.bestReason == "" {
 			m.bestReason = res.Reason
+			m.bestIdx = i
 		}
 	}
 	return false, nil
@@ -89,6 +92,13 @@ func (m *shapeMatcher) FailureMessage(actual any) string {
 	fmt.Fprintf(&b, "MatchShape: polled %d events, none matched expected shape %v", m.lastEventCount, m.expected)
 	if m.bestReason != "" {
 		fmt.Fprintf(&b, "; closest mismatch: %s", m.bestReason)
+	}
+	// Print the closest event's actual payload so a "field X missing"
+	// reason can be reconciled against what was actually polled. Without
+	// this, the operator can't distinguish e.g. an Error envelope, a
+	// nats.ErrNoResponders timeout shape, or a service error reply.
+	if events, ok := actual.([]readers.Event); ok && m.bestIdx >= 0 && m.bestIdx < len(events) {
+		fmt.Fprintf(&b, "; got payload: %v", events[m.bestIdx].Payload)
 	}
 	return b.String()
 }
