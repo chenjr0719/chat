@@ -54,6 +54,40 @@ A change that fails either gate is a leak: it encodes app knowledge
 into the harness, which then becomes brittle the next time the app
 adds a feature the encoded rule didn't anticipate.
 
+### What a failing scenario means
+
+A scenario failure is **NOT** evidence of a tool bug by default. The
+tool exists to find bugs in the app under test — that's its main
+purpose. When a scenario fails, both interpretations are alive:
+
+```
+   failing assertion  ──┬──►  app bug  (the production code did
+                        │              the wrong thing) — the
+                        │              tool is doing its job
+                        │
+                        └──►  tool bug  (the harness materialised
+                                         state wrong, polled the
+                                         wrong place, mis-routed
+                                         the fire) — fix the tool
+```
+
+Disambiguating between the two is the operator's job. Common signals:
+
+- production code logs an error mid-flow → most likely an app bug;
+  the harness reached the right code path and surfaced the real
+  failure mode (this is what we want)
+- production code never runs / never logs → could be either; check
+  whether the seed state, fire subject, credentials are correct
+- the same assertion fails when you fire from production-grade
+  state (manual stack, production env) → app bug
+- the assertion fails only under the harness's seed state → likely
+  a tool grammar gap or misuse
+
+When a finding turns out to be an app bug, that is the platform
+working as designed. The two gates above are about the **harness
+itself** being principled enough that operators trust the bugs it
+surfaces are real.
+
 The single-purpose-harness disclaimer at the top of the spec
 (`docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md`)
 is the *implementation* posture; this section is the *design* contract

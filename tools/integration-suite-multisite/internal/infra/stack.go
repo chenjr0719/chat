@@ -345,6 +345,16 @@ func applyFederation(ctx context.Context, natsURLBySite map[string]string, repoR
 		slog.Info("integration-suite: stream ready", "stream", "INBOX_"+site)
 	}
 
+	// OUTBOX_<site> isn't bootstrapped by any service; the harness owns
+	// it (analog of ops/IaC in production). Source of every cross-site
+	// metadata event — must exist before any production code path
+	// publishes to outbox.<site>.>.
+	slog.Info("integration-suite: creating OUTBOX streams")
+	if err := CreateOutboxStreams(ctx, admins); err != nil {
+		return fmt.Errorf("federation: create outbox streams: %w", err)
+	}
+	slog.Info("integration-suite: OUTBOX streams ready")
+
 	specs, err := LoadFederationSources(catalogPath)
 	if err != nil {
 		return fmt.Errorf("federation: load catalog: %w", err)
