@@ -141,8 +141,8 @@ func TestServiceEnv_RoomServiceMatchesMultiSiteRouting(t *testing.T) {
 		wantCassandra string
 		wantNATS      string
 	}{
-		{"site-a", "mongodb://chat-local-toxiproxy:27017", "chat-local-toxiproxy", "nats://nats-site-a:4222"},
-		{"site-b", "mongodb://chat-local-toxiproxy:27018", "chat-local-toxiproxy:9043", "nats://nats-site-b:4222"},
+		{"site-a", "mongodb://chat-local-toxiproxy:27017", "chat-local-toxiproxy", "nats://chat-local-toxiproxy:4222"},
+		{"site-b", "mongodb://chat-local-toxiproxy:27018", "chat-local-toxiproxy:9043", "nats://chat-local-toxiproxy:4223"},
 	} {
 		tc := tc
 		t.Run(tc.site, func(t *testing.T) {
@@ -165,7 +165,7 @@ func TestServiceEnv_AuthServiceDevModeAndPort(t *testing.T) {
 
 func TestServiceEnv_MockUserServiceMinimalNATSOnly(t *testing.T) {
 	env := testServiceEnv("mock-user-service", "site-a", 24)
-	assert.Equal(t, "nats://nats-site-a:4222", env["NATS_URL"])
+	assert.Equal(t, "nats://chat-local-toxiproxy:4222", env["NATS_URL"])
 	assert.Equal(t, "site-a", env["SITE_ID"])
 	// mock-user-service has no Mongo / Cassandra / HTTP port.
 	assert.NotContains(t, env, "MONGO_URI")

@@ -97,7 +97,12 @@ func startService(ctx context.Context, networkName, svc, tag, siteID, repoRoot, 
 // suite's seed-engine bucket window or partition-keyed reads silently
 // miss the seeded rows. Suite default is 24h (CLAUDE.md §6); a
 // zero value here means "let the service use its own envDefault" so
-// callers that don't care don't have to plumb the value.
+// serviceEnv builds the env map for one service container. Mongo and
+// NATS URLs route through chat-local-toxiproxy on per-site listen ports
+// (mongoProxyURL / natsProxyURL) so the chaos engine can inject faults
+// at the connection layer. The natsURL / mongoURI parameters carry the
+// raw host-mapped URLs for callers that need a direct address (none
+// today; preserved for future runner-side use).
 //
 // Bootstrap flags (BOOTSTRAP_STREAMS) match the per-service
 // deploy/docker-compose.yml convention exactly so the runner sees
@@ -105,16 +110,18 @@ func startService(ctx context.Context, networkName, svc, tag, siteID, repoRoot, 
 //
 // Unknown services return an empty map. The caller (startService) is
 // responsible for treating that as a programming error.
-func serviceEnv(svc, siteID, authSigningKey string, msgBucketHours int, natsURL, mongoURI, valkeyAddr string) map[string]string {
-	// Cassandra proxy port differs by site — CassandraProxy-site-a
-	// listens on :9042, CassandraProxy-site-b listens on :9043.
+func serviceEnv(svc, siteID, authSigningKey string, msgBucketHours int, _, _, valkeyAddr string) map[string]string {
+	// Routing: Mongo + NATS via per-site Toxiproxy listeners; Cassandra
+	// via a single Toxiproxy listener (the upstream is shared).
+	mongoURIViaProxy := mongoProxyURL(siteID)
+	natsURLViaProxy := natsProxyURL(siteID)
 	cassandraHost := cassandraProxyHost(siteID)
 
 	common := map[string]string{
 		"SITE_ID":         siteID,
-		"NATS_URL":        natsURL,
+		"NATS_URL":        natsURLViaProxy,
 		"NATS_CREDS_FILE": "/etc/nats/backend.creds",
-		"MONGO_URI":       mongoURI,
+		"MONGO_URI":       mongoURIViaProxy,
 		"MONGO_DB":        "chat",
 	}
 	merge := func(extras map[string]string) map[string]string {
@@ -203,7 +210,7 @@ func serviceEnv(svc, siteID, authSigningKey string, msgBucketHours int, natsURL,
 		// mock-user-service/deploy/docker-compose.yml.
 		return map[string]string{
 			"SITE_ID":         siteID,
-			"NATS_URL":        natsURL,
+			"NATS_URL":        natsProxyURL(siteID),
 			"NATS_CREDS_FILE": "/etc/nats/backend.creds",
 		}
 	}
@@ -218,4 +225,24 @@ func cassandraProxyHost(siteID string) string {
 		return "chat-local-toxiproxy:9043"
 	}
 	return "chat-local-toxiproxy"
+}
+
+// mongoProxyURL returns the Mongo connect URL routed through Toxiproxy.
+// MongoProxy-site-a listens on :27017; MongoProxy-site-b on :27018.
+func mongoProxyURL(siteID string) string {
+	port := 27017
+	if siteID == "site-b" {
+		port = 27018
+	}
+	return fmt.Sprintf("mongodb://chat-local-toxiproxy:%d", port)
+}
+
+// natsProxyURL returns the NATS connect URL routed through Toxiproxy.
+// NATSProxy-site-a listens on :4222; NATSProxy-site-b on :4223.
+func natsProxyURL(siteID string) string {
+	port := 4222
+	if siteID == "site-b" {
+		port = 4223
+	}
+	return fmt.Sprintf("nats://chat-local-toxiproxy:%d", port)
 }
