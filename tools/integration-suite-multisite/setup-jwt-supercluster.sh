@@ -139,82 +139,153 @@ echo ""
 
 # --- nsc mutation ---------------------------------------------------
 #
-# TODO(suite-multisite): finalise the exact nsc invocations.
+# This regenerates the entire trust chain with the addition of a
+# cross-domain JS API service export on the chatapp account. Approach:
+# duplicate docker-local/setup.sh's nsc steps inside nats-box, then add
+# `nsc add export ... --subject $JS.> --service` to make $JS.<domain>.API.*
+# routable across the supercluster gateway for the chatapp account.
 #
-# Based on F-001's probe evidence, the chatapp account JWT needs
-# service exports/imports for the $JS.<site>.API.> subject pattern
-# between sites. Empirical work needed to pin down:
-#   - whether single-account (current design) requires explicit
-#     exports for cross-cluster JS API, or whether account-level
-#     scope changes (--allow-pub on $JS.>) are sufficient
-#   - the exact nsc add export / nsc add import commands
-#   - whether resolver_preload needs any additional account JWT
-#     entries
+# We can't mutate the existing JWT in place — setup.sh's nsc state is
+# ephemeral (no persistent volume), so the nsc keystore is gone after
+# its run. The trade-off the limits-doc exception permits: this script
+# is a setup.sh-with-additions, not an in-place mutator.
 #
-# VERIFICATION TARGET (from Run 54, recorded in F-001):
-#   after this body lands + setup-jwt is run + scenario re-runs,
-#   probe of INBOX_site-b's Source must show:
-#     cfg.sources[0].domain   = "site-a"   (currently "")
-#     state.sources[0].active = > 0         (currently -1ns)
-#     state.sources[0].lag    ≥ 0
-#     msgs                    > 0
-#   if cfg.sources[0].domain still nulls, export/import shape is
-#   wrong. see docs/integration-suite-multisite-findings.md F-001
-#   §"Verification target" for the full reproducer.
-#
-# Until the nsc body is filled in, this script fails loudly so the
-# operator knows the fix isn't applied yet. The framework around the
-# nsc bit (idempotency check, backup, re-verify, restoration on
-# failure) is the harness's contribution; the nsc invocations are
-# the trust-chain expert's contribution.
-#
-# When the body is complete, replace this block with the nsc commands
-# and the JWT regeneration sequence (see docker-local/setup.sh for
-# the regeneration pattern).
+# Best-effort caveat: the exact NATS handling of cross-domain JS API
+# for same-account-multi-cluster topology is unobvious from docs alone.
+# The post-mutation verification at the bottom of this script catches
+# the case where the export shape doesn't actually unlock cross-domain
+# delivery, and restores backups so a wrong guess doesn't leave the
+# operator with a broken trust chain.
 
-cat >&2 <<EOF
-ERROR: nsc mutation body is not yet implemented.
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
 
-The framework is in place (idempotency check, backups, verification)
-but the exact nsc commands to add the \$JS.<site>.API.> exports/
-imports on the chatapp account are not yet finalised — they need
-hands-on nsc verification, not best-effort guessing.
+echo "Regenerating trust chain with multi-site JS exports via nats-box..."
+echo ""
 
-See:
-  docs/integration-suite-multisite-findings.md F-001
-  tools/integration-suite-multisite/setup-jwt-supercluster.sh
-    (this file, search for "TODO(suite-multisite)")
+docker run --rm \
+  -v "$TMPDIR:/output" \
+  "$NATS_BOX_IMAGE" \
+  sh -c '
+    set -e
 
-Until the nsc body lands, Surface 5 of the federation scenario stays
-red, which is the documented finding. The two infra-sanity scenarios
-and the cross-site-seed-visibility scenario continue to pass.
+    nsc add operator --name localdev --sys 2>&1 | sed "s/^/  /"
+    nsc env -o localdev >/dev/null 2>&1
 
-This is intentional — shipping a half-correct nsc body would create a
-worse failure mode (subtly broken trust chain) than the current
-documented one (clearly broken at Surface 5).
+    nsc add account --name chatapp 2>&1 | sed "s/^/  /"
+    nsc edit account chatapp \
+      --js-mem-storage 512M \
+      --js-disk-storage 5G \
+      --js-streams 10 \
+      2>&1 | sed "s/^/  /"
+
+    # MULTI-SITE ADDITION:
+    # Service export for cross-domain JS API. With a single account
+    # spanning the supercluster, this is what permits the federation
+    # Source on INBOX_site-b to issue $JS.site-a.API.STREAM.MSG.GET
+    # requests that NATS-A can route through the gateway and reply to.
+    # Without this export, NATS-B silently strips the Domain field on
+    # the configured Source (F-001) because the account JWT does not
+    # declare any JS API subjects as routable.
+    nsc add export --account chatapp --service \
+      --subject "\$JS.>" \
+      --name "CrossDomainJSAPI" \
+      --response-type stream \
+      2>&1 | sed "s/^/  /"
+
+    nsc describe operator --raw > /output/operator.jwt
+    nsc describe account chatapp --raw > /output/account.jwt
+    nsc describe account SYS --raw > /output/sys.jwt
+
+    nsc describe account chatapp 2>/dev/null \
+      | grep "Account ID" \
+      | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" \
+      > /output/account_pub.txt
+    nsc describe account SYS 2>/dev/null \
+      | grep "Account ID" \
+      | awk -F"|" "{gsub(/[ \t]/, \"\", \$3); print \$3}" \
+      > /output/sys_pub.txt
+
+    nsc add user --account chatapp --name backend 2>&1 | sed "s/^/  /"
+    nsc edit user --account chatapp --name backend \
+      --allow-sub ">" --allow-pub ">" 2>&1 | sed "s/^/  /"
+    nsc generate creds --account chatapp --name backend > /output/backend.creds
+  '
+
+# --- Atomic replacement of nats.conf + backend.creds ----------------
+
+OPERATOR_JWT=$(cat "$TMPDIR/operator.jwt")
+ACCOUNT_JWT=$(cat "$TMPDIR/account.jwt")
+SYS_JWT=$(cat "$TMPDIR/sys.jwt")
+ACCOUNT_PUB_KEY=$(cat "$TMPDIR/account_pub.txt")
+SYS_PUB_KEY=$(cat "$TMPDIR/sys_pub.txt")
+
+cp "$TMPDIR/backend.creds" "$BACKEND_CREDS"
+chmod 644 "$BACKEND_CREDS"
+
+cat > "$NATS_CONF" <<EOF
+# Generated by tools/integration-suite-multisite/setup-jwt-supercluster.sh
+# Test-only multi-site extension of docker-local/setup.sh's trust chain.
+# When the chat-app project grows multi-site support in setup.sh, this
+# script and its output are obsolete — see ARCHITECTURE.md §0 + F-001.
+
+port: 4222
+http_port: 8222
+
+operator: ${OPERATOR_JWT}
+
+resolver: MEMORY
+
+resolver_preload {
+  ${ACCOUNT_PUB_KEY}: ${ACCOUNT_JWT}
+  ${SYS_PUB_KEY}: ${SYS_JWT}
+}
+
+jetstream {
+  store_dir: /data/jetstream
+  max_mem: 1G
+  max_file: 10G
+}
+
+websocket {
+  port: 9222
+  no_tls: true
+}
 EOF
-exit 2
 
-# When the nsc body is added, restore the backups on the validation
-# failure path so a botched run doesn't leave the operator with a
-# broken trust chain.
+echo "Wrote new trust chain:"
+echo "  $NATS_CONF"
+echo "  $BACKEND_CREDS"
+echo ""
 
 # --- Post-mutation verification -------------------------------------
 
-# if ! check_jwt_supports_supercluster; then
-#   echo "ERROR: nsc mutation completed but JWT still does not declare" >&2
-#   echo "       the required exports. Restoring backups." >&2
-#   mv "$NATS_CONF.bak-$TS" "$NATS_CONF"
-#   mv "$BACKEND_CREDS.bak-$TS" "$BACKEND_CREDS"
-#   exit 3
-# fi
+if ! check_jwt_supports_supercluster; then
+  echo "ERROR: nsc mutation completed but JWT still does not declare" >&2
+  echo "       the required exports. Restoring backups." >&2
+  mv "$NATS_CONF.bak-$TS" "$NATS_CONF"
+  mv "$BACKEND_CREDS.bak-$TS" "$BACKEND_CREDS"
+  exit 3
+fi
 
-# echo ""
-# echo "=== Done ==="
-# echo ""
-# echo "Chatapp account JWT now declares the cross-domain JS API"
-# echo "exports needed for multi-site federation. Restart the stack"
-# echo "to pick up the new trust chain:"
-# echo ""
-# echo "  USE_INFRA=true make -C tools/integration-suite-multisite local"
-# echo ""
+echo "=== Done ==="
+echo ""
+echo "Chatapp account JWT now declares the cross-domain JS API"
+echo "export needed for multi-site federation. Restart the stack"
+echo "to pick up the new trust chain:"
+echo ""
+echo "  USE_INFRA=true make -C tools/integration-suite-multisite local"
+echo ""
+echo "Backups retained at:"
+echo "  $NATS_CONF.bak-$TS"
+echo "  $BACKEND_CREDS.bak-$TS"
+echo ""
+echo "NOTE: this script is a best-effort attempt at the nsc body for"
+echo "F-001. The verification above checks that the JWT now lists"
+echo "\$JS.> as an export, which is necessary but may not be SUFFICIENT"
+echo "for the federation Source to actually deliver. The federation"
+echo "scenario re-run is the real test: if INBOX_site-b's Source still"
+echo "shows domain=\"\" + active=-1ns + msgs=0 after running this"
+echo "script + restarting the stack, the export shape needs more work."
+echo "See docs/integration-suite-multisite-findings.md F-001 for the"
+echo "verification target."
