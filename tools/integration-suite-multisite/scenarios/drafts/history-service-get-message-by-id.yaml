@@ -1,0 +1,81 @@
+scenario: history-service-get-message-by-id
+source: history-service/internal/service/messages.go:264 (GetMessageByID handler), history-service/internal/service/utils.go:44 (findMessage — message_id PK lookup, room_id consistency check), pkg/subject/subject.go:363 (MsgGetPattern), pkg/model/cassandra/message.go (Message JSON shape returned to client)
+status: draft
+tag: positive
+
+# Positive isolation scenario for history-service's read path.
+# Seeds a single message row into Cassandra via cassandra_data
+# (bypassing the send pipeline — that's the pipeline scenario's job)
+# and asserts history-service returns it via GetMessageByID.
+#
+# This test does NOT exercise message-gatekeeper or message-worker; it
+# isolates the read path so a failure here localises to history-service
+# alone. Combined with message-pipeline-send-and-persist these two
+# scenarios together cover gatekeeper → worker → Cassandra and
+# Cassandra → history-service end-to-end.
+#
+# The seed includes alice + r-general + alice's membership so
+# history-service's getAccessSince() permission check
+# (history-service/internal/service/utils.go:getAccessSince — requires
+# the caller's subscription row exists in Mongo) passes.
+#
+# Cassandra seed is intentionally minimal — only scalar columns the
+# scenario asserts on. Sender (UDT), mentions (SET<UDT>), and other
+# FROZEN<…> fields are omitted; gocql renders them as null in the
+# returned JSON, and the match block does not assert on them.
+#
+# Constants hardcoded:
+#   message id — 20-char base62 per pkg/idgen.IsValidMessageID; pinned
+#                literal so both the cassandra_data row and the request
+#                payload + reply assertion agree.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m1history0001seedrow
+        room_id: r-general
+        msg: history seed message
+        site_id: site-a
+        # created_at one minute before sandbox start so it's safely in
+        # the past relative to any read filter window. The ${now ± d}
+        # pass resolves this to a time.Time anchored at Sandbox.StartTime
+        # (sandbox_cassandra.go:170-191).
+        created_at: ${now - 1m}
+
+input:
+  site: site-a
+  verb: nats_request
+  # GetMessageByID subject pattern from pkg/subject.MsgGetPattern —
+  # natsrouter extracts {account} and {roomID} from the subject and
+  # passes them into the handler via c.Param(...).
+  subject: chat.user.${alice.account}.request.room.r-general.site-a.msg.get
+  payload:
+    messageId: m1history0001seedrow
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 — history-service's reply on the request inbox. Returns
+  # a pointer to *cassandra.Message (history-service Message type is a
+  # type alias — internal/models/message.go:8). JSON shape uses
+  # camelCase per the struct's `json:` tags (NOT the snake_case CQL
+  # column names — those only appear in cassandra_select payloads).
+  - location: reply
+    match:
+      body_json:
+        messageId: m1history0001seedrow
+        roomId: r-general
+        msg: history seed message

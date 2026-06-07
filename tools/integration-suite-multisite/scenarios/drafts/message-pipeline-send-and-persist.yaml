@@ -1,0 +1,117 @@
+scenario: message-pipeline-send-and-persist
+source: message-gatekeeper/handler.go:167 (processMessage publishes MessageEvent to MESSAGES_CANONICAL on validation success), message-worker/handler.go (consumes canonical, persists to messages_by_id + messages_by_room via UnloggedBatch), pkg/stream/stream.go (MessagesCanonical subject pattern), docs/cassandra_message_model.md (table schema)
+status: draft
+tag: positive
+
+# End-to-end positive scenario for the per-site message pipeline:
+# client publish → message-gatekeeper validates → MESSAGES_CANONICAL
+# → message-worker persists → Cassandra rows queryable.
+#
+# Asserts every layer the send-side pipeline touches on site-a so a
+# regression localises to the broken layer instead of forcing log
+# reads:
+#
+#   Surface 1   gatekeeper async reply on user response subject
+#                 (proves the validate-and-respond path)
+#   Surface 2   canonical event on MESSAGES_CANONICAL_site-a
+#                 (proves the gatekeeper publish)
+#   Surface 3   row inserted into messages_by_id
+#                 (proves message-worker consumed + wrote)
+#
+# All three services on site-a (strictly per-site — message-gatekeeper
+# does not federate; message-worker only federates for thread replies
+# with remote subscribers, which this scenario does not exercise).
+#
+# Constants hardcoded (not $auto):
+#   requestId — needed at Warmer time for the nats_subscribe subject;
+#               ${input.payload.requestId} is post-fire only, so the
+#               request UUID is pinned literal so Warm + assertions
+#               agree.
+#   id        — same shape rationale; 20-char base62 per pkg/idgen.
+#
+# Per-run uniqueness is not required: the sandbox truncates
+# messages_by_id + messages_by_room at Setup, so the IDs are clean on
+# every run.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  # Send subject pattern from pkg/subject — MESSAGES_<site> stream:
+  # chat.user.<account>.room.<roomID>.<siteID>.msg.send
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m1pipeline00send001a
+    content: hello from integration test
+    requestId: 01970a4f-8c2d-7c9a-abcd-e012345678aa
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 — gatekeeper's async reply on the user response subject.
+  # message-gatekeeper publishes the reply via h.sendReply at
+  # message-gatekeeper/handler.go:146, addressed to
+  # chat.user.<account>.response.<requestId>. We listen via
+  # nats_subscribe (Warmer) — the subscription must open before the
+  # publish lands, which the runner guarantees by walking expected[]
+  # warmers BEFORE Dispatcher.Fire (internal/runtime/runner_scenario.go).
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.01970a4f-8c2d-7c9a-abcd-e012345678aa
+    match:
+      received:
+        - body_json:
+            id: m1pipeline00send001a
+            roomId: r-general
+            userAccount: ${alice.account}
+            content: hello from integration test
+
+  # Surface 2 — canonical MessageEvent on MESSAGES_CANONICAL_site-a.
+  # Published by message-gatekeeper at handler.go (processMessage's
+  # publish call) under subject chat.msg.canonical.<siteID>.created.
+  # Payload shape from pkg/model/event.go: MessageEvent has event,
+  # message (model.Message), siteId, timestamp.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        siteId: site-a
+        message:
+          id: m1pipeline00send001a
+          roomId: r-general
+          userAccount: ${alice.account}
+          content: hello from integration test
+
+  # Surface 3 — Cassandra row in messages_by_id, proving message-worker
+  # consumed the canonical event and persisted. messages_by_id is the
+  # PK = (message_id, created_at) lookup table the history-service's
+  # GetMessageByID handler also reads from. SELECT JSON returns the
+  # row as a JSON object keyed by CQL column names (snake_case).
+  # cassandra_select args.params provides the bind for the single ?.
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m1pipeline00send001a]
+    match:
+      message_id: m1pipeline00send001a
+      room_id: r-general
+      msg: hello from integration test
+      site_id: site-a
+    timeout: 10s
