@@ -101,11 +101,21 @@ expected:
   # Surface 4 — the OUTBOX publish on site-a. room-worker-site-a
   # detects bob as a remote subscriber (via the remote_users stub
   # in site-a's `users` collection) and publishes
-  # outbox.site-a.to.site-b.room_renamed locally. This assertion
-  # localises the failure: if it passes but Surface 5 fails, the
-  # federation Source isn't delivering; if it fails, the publish
-  # itself never happened (or the OUTBOX stream is missing — see
-  # ARCHITECTURE.md §0 "the tool's limits").
+  # outbox.site-a.to.site-b.room_renamed locally.
+  #
+  # Production wraps every cross-site event in pkg/model.OutboxEvent:
+  #   { type, siteId, destSiteId, payload (base64-encoded JSON), timestamp }
+  # The Surface assertion targets the envelope fields — they prove
+  # cross-site ROUTING is correct (right type, right destination
+  # site). The inner payload duplicates what Surface 3 already
+  # asserts on the canonical event; asserting it again here would
+  # require a base64-decode matcher primitive that doesn't exist
+  # yet (would be a generic grammar extension, not a one-off).
+  #
+  # Localisation: if it passes but Surface 5 fails, the federation
+  # Source isn't delivering; if it fails, the publish itself never
+  # happened (or the OUTBOX stream is missing — see ARCHITECTURE.md
+  # §0 "the tool's limits").
   - location: jetstream_consume
     site: site-a
     args:
@@ -113,17 +123,19 @@ expected:
       filter_subject: outbox.site-a.to.site-b.room_renamed
     match:
       body_json:
-        roomId: r-shared
-        newName: SharedChannelRenamed
+        type: room_renamed
+        siteId: site-a
+        destSiteId: site-b
     timeout: 10s
 
   # Surface 5 — federation tail on site-b. The Source on INBOX_site-b
   # sources OUTBOX_site-a with filter outbox.site-a.to.site-b.> —
-  # the rename event arrives here. Failure here ALONE (with Surface
-  # 4 green) localises the bug to the federation Source delivery,
-  # which in our current trust-chain config requires `$JS.>`
-  # export/import in the operator JWT (ops/IaC concern, outside the
-  # tool's scope per ARCHITECTURE.md §0).
+  # the rename envelope arrives here. Same envelope as Surface 4,
+  # asserted again on the peer side to prove delivery. Failure here
+  # ALONE (with Surface 4 green) localises the bug to the federation
+  # Source delivery, which in our current trust-chain config
+  # requires `$JS.>` export/import in the operator JWT (ops/IaC
+  # concern, outside the tool's scope per ARCHITECTURE.md §0).
   - location: jetstream_consume
     site: site-b
     args:
@@ -131,6 +143,7 @@ expected:
       filter_subject: outbox.site-a.to.site-b.room_renamed
     match:
       body_json:
-        roomId: r-shared
-        newName: SharedChannelRenamed
+        type: room_renamed
+        siteId: site-a
+        destSiteId: site-b
     timeout: 15s
