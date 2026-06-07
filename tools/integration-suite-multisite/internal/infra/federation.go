@@ -9,8 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"gopkg.in/yaml.v3"
-
-	"github.com/hmchangw/chat/pkg/stream"
 )
 
 type SourceSpec struct {
@@ -80,37 +78,6 @@ func Apply(ctx context.Context, specs []SourceSpec, adminBySite map[string]*nats
 		})
 		if err != nil {
 			return fmt.Errorf("federation Apply: UpdateStream %s on %s: %w", s.Stream, s.On, err)
-		}
-	}
-	return nil
-}
-
-// CreateOutboxStreams creates OUTBOX_<site> on each site's local
-// JetStream domain. OUTBOX is the source side of every cross-site
-// federation Source — production code (room-worker, room-service,
-// message-worker) publishes to outbox.<site>.> subjects when an event
-// must reach a peer site, and the federation Source on the peer's
-// INBOX sources from OUTBOX_<this>. Without the stream existing,
-// production publishes return "no response from stream" and federation
-// silently fails to fire — for ALL metadata-federation events
-// (member_added, role_updated, subscription_*, room_renamed, etc.).
-//
-// In production ops/IaC own OUTBOX (per CLAUDE.md §"Stream bootstrap
-// ownership"). In the multi-site harness the infra layer is the ops
-// analog: it owns stream orchestration, including the federation
-// streams no service bootstraps.
-func CreateOutboxStreams(ctx context.Context, adminBySite map[string]*nats.Conn) error {
-	for site, admin := range adminBySite {
-		js, err := jetstream.NewWithDomain(admin, site)
-		if err != nil {
-			return fmt.Errorf("outbox: js context for %s: %w", site, err)
-		}
-		cfg := stream.Outbox(site)
-		if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-			Name:     cfg.Name,
-			Subjects: cfg.Subjects,
-		}); err != nil {
-			return fmt.Errorf("outbox: CreateOrUpdateStream %s on %s: %w", cfg.Name, site, err)
 		}
 	}
 	return nil

@@ -54,6 +54,48 @@ A change that fails either gate is a leak: it encodes app knowledge
 into the harness, which then becomes brittle the next time the app
 adds a feature the encoded rule didn't anticipate.
 
+### The tool's limits
+
+The tool has a bounded scope. Outside those bounds is the operator's
+problem, not the tool's. Treating these limits as soft — quietly
+extending the tool to handle "just one more thing" — is the most
+common way harnesses turn into the system they were supposed to
+test. We document the limits explicitly so the temptation to cross
+them is visible every time.
+
+The tool will:
+- materialise YAML-declared state into the appropriate backend;
+- orchestrate containers, networks, and per-site env wiring;
+- apply federation Sources between the two NATS clusters (the harness
+  analog of setting up the federation link);
+- observe state via the universal pollers;
+- report what the system returned, verbatim.
+
+The tool will NOT:
+- create app-side streams, collections, or tables that no service
+  bootstraps. If production assumes a resource exists because ops/IaC
+  put it there, and ops/IaC isn't running in the test, the failure
+  stands as a finding.
+- write app-side documents the scenario didn't declare.
+- guess what production "probably meant" when something is missing.
+- provide workarounds, recovery steps, or fix-up procedures for
+  failures it surfaces. *How* the operator gets unblocked — pre-
+  creating a missing stream, fixing the app, reshaping the scenario —
+  is the operator's call, not the tool's documentation surface.
+
+Concrete examples of resources the harness does not create:
+
+- **`OUTBOX_<site>` JetStream streams.** Owned by ops/IaC in
+  production (per `CLAUDE.md` §"Stream bootstrap ownership"). No chat
+  service bootstraps them. If a scenario fires production code that
+  publishes to `outbox.<site>.>`, the publish returns whatever NATS
+  returns when the stream is absent. That's the finding.
+- Any other operationally-scaffolded resource.
+
+When the failure points at a gap outside the tool's scope, the tool's
+job is done: the system's verbatim error is the finding. What to do
+about it lives wherever ops decisions live, not here.
+
 ### What a failing scenario means
 
 A scenario failure is **NOT** evidence of a tool bug by default. The

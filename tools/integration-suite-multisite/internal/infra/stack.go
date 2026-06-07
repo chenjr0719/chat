@@ -345,16 +345,16 @@ func applyFederation(ctx context.Context, natsURLBySite map[string]string, repoR
 		slog.Info("integration-suite: stream ready", "stream", "INBOX_"+site)
 	}
 
-	// OUTBOX_<site> isn't bootstrapped by any service; the harness owns
-	// it (analog of ops/IaC in production). Source of every cross-site
-	// metadata event — must exist before any production code path
-	// publishes to outbox.<site>.>.
-	slog.Info("integration-suite: creating OUTBOX streams")
-	if err := CreateOutboxStreams(ctx, admins); err != nil {
-		return fmt.Errorf("federation: create outbox streams: %w", err)
-	}
-	slog.Info("integration-suite: OUTBOX streams ready")
-
+	// NOTE: OUTBOX_<site> is not created here. In production, ops/IaC
+	// owns OUTBOX (per CLAUDE.md §"Stream bootstrap ownership"). No
+	// service in the chat app creates it — that's the production
+	// design. If a scenario fires production code that publishes to
+	// outbox.<site>.>, the publish returns "no response from stream"
+	// when OUTBOX is absent. That's a real finding — either the app's
+	// ops layer is incomplete or the test operator wants to pre-create
+	// the stream manually before running the test. The harness does
+	// NOT silently fill the gap, because doing so would hide the
+	// ops/IaC requirement from anyone reading the failure.
 	specs, err := LoadFederationSources(catalogPath)
 	if err != nil {
 		return fmt.Errorf("federation: load catalog: %w", err)
