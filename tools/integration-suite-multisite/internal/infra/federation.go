@@ -53,8 +53,8 @@ func peerDomain(site string) string {
 }
 
 // Apply creates JetStream Sources on each target INBOX. Each Source
-// also carries a SubjectTransform that rewrites the inbound subject
-// from `outbox.{peer}.to.{site}.>` to `chat.inbox.{site}.aggregate.>`
+// carries a SubjectTransform that rewrites the inbound subject from
+// `outbox.{peer}.to.{site}.>` to `chat.inbox.{site}.aggregate.>`
 // before the message lands in the destination stream. The transform
 // matches the chat-app's documented INBOX schema (see pkg/stream.Inbox
 // docstring) — the `chat.inbox.{site}.aggregate.>` subject pattern
@@ -62,6 +62,15 @@ func peerDomain(site string) string {
 // transform the source-delivered subject stays as outbox.* and the
 // inbox-worker consumer (bound to chat.inbox.{site}.aggregate.>) never
 // sees the message.
+//
+// The transform's Source field doubles as the Source-consumer filter
+// — NATS only pulls messages matching it. We deliberately leave
+// StreamSource.FilterSubject empty: setting both FilterSubject AND a
+// SubjectTransform with the same pattern trips NATS error 10137
+// ("consumer with multiple subject filters cannot use subject based
+// API") on the cross-cluster Source consumer, because NATS counts the
+// two as separate subject filters on a single legacy-API consumer
+// (observed in Run 65).
 //
 // Each spec is applied via the admin conn that's local to its target
 // site. The leafnode transport between sites carries the $JS API for
@@ -79,9 +88,8 @@ func Apply(ctx context.Context, specs []SourceSpec, adminBySite map[string]*nats
 		_, err = js.UpdateStream(ctx, jetstream.StreamConfig{
 			Name: s.Stream,
 			Sources: []*jetstream.StreamSource{{
-				Name:          s.FromStream,
-				FilterSubject: s.Filter,
-				Domain:        peerDomain(s.On),
+				Name:   s.FromStream,
+				Domain: peerDomain(s.On),
 				SubjectTransforms: []jetstream.SubjectTransformConfig{{
 					Source:      s.Filter,
 					Destination: fmt.Sprintf("chat.inbox.%s.aggregate.>", s.On),

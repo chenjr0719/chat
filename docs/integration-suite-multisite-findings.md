@@ -250,6 +250,53 @@ Stripped the `cluster: {…}` block from both
 standalone on each node. The leaf link continues to carry inter-
 site traffic as designed; no `$SYS` warnings reappeared.
 
+### Follow-up — Run 65: NATS 10137 on the Source consumer
+
+Stack booted in 67s, all streams ready, federation `Apply` ran
+clean, no boot races. A standalone probe confirmed cross-domain
+`$JS.>` traversal works over the leaf link (`A→B INBOX state` and
+`B→A OUTBOX state` queries both returned correct counts). But
+INBOX_site-b still received zero messages.
+
+Both NATS containers logged, every Source retry tick (~13s):
+
+```
+   [WRN] JetStream error response for stream INBOX_site-b
+         create source consumer OUTBOX_site-a:
+         consumer with multiple subject filters
+         cannot use subject based API (10137)
+```
+
+NATS counted `StreamSource.FilterSubject` and
+`SubjectTransforms[0].Source` as two filters on the cross-cluster
+Source consumer, even though both carried the same pattern
+(`outbox.site-a.to.site-b.>`). Cross-cluster Source consumers use
+the legacy subject-routed API, which permits only one filter.
+
+The two "options" the tester proposed:
+- **(A)** Drop `FilterSubject`, let the SubjectTransform's `Source`
+  field act as both filter and rewrite.
+- **(B)** Drop the SubjectTransform, keep `FilterSubject` alone.
+
+**Option B was rejected.** `inbox-worker`'s consumer is bound to
+`subject.InboxAggregateAll(siteID)` = `chat.inbox.{site}.aggregate.>`
+(see `inbox-worker/main.go:394`), and `INBOX_{site}`'s declared
+subjects in `pkg/stream.Inbox` are
+`[chat.inbox.{site}.*, chat.inbox.{site}.aggregate.>]`. Without
+the transform, federated messages would arrive under the
+`outbox.>` namespace, get rejected by the stream's subject filter,
+and even if they landed they'd be invisible to the
+`aggregate.>`-bound consumer. The transform is what bridges
+publisher subject space to consumer subject space; dropping it
+breaks the chat-app's documented federation contract.
+
+**Fix in the test tool (this commit):**
+Option A — `internal/infra/federation.go` `Apply` no longer sets
+`StreamSource.FilterSubject`. The `SubjectTransform.Source` field
+now both filters (NATS only pulls matching subjects) and rewrites.
+Same Source/Destination pair as before; one duplicate filter
+removed.
+
 ### Where the chat-app team picks up
 
 This finding is a report on what the test tool needed to mirror
