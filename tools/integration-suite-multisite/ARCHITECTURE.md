@@ -229,10 +229,14 @@ empirical proof). Leafnodes expose the full account subject space —
 including `$JS.<domain>.API.*` — across the link, which is exactly
 what cross-domain Sources need.
 
-Each server's conf also includes a **self-route** in the `cluster:`
-block — a route pointing at the server's own hostname. JetStream
-asset coordination requires an in-cluster transport even on a
-single-server cluster.
+Each server runs **standalone JetStream** — no `cluster:` block. The
+gateway-era `cluster: {…}` self-route was added when gateway+JS
+demanded an in-cluster `$SYS` transport; leafnode+JS has no such
+requirement. Keeping the self-route past the gateway era forced
+clustered JS, which then never elected a meta-leader from a single
+node and held JS at 503 forever (Run 60-61). Standalone JS works
+correctly with a single node per site, and the leaf link still
+carries inter-site traffic as designed.
 
 The runner dials each site's NATS directly (not via Toxiproxy) using
 the `WithDomain(siteID)` JetStream option so that stream operations

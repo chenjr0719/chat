@@ -208,6 +208,48 @@ Any future scenario that fires a service with
 `BOOTSTRAP_STREAMS=true` against the leafnode-connected stack
 would have hit the same race; the wait unblocks all of them.
 
+### Follow-up — Runs 60-61: `cluster:` stanza forced clustered JS
+
+The Phase A wait fired correctly but never observed JS reach
+ready. Both NATS containers logged the same pattern indefinitely:
+
+```
+   [INF] Starting JetStream cluster
+   [INF] Creating JetStream metadata controller
+   [INF] JetStream cluster bootstrapping
+   [INF] JetStream using domains: local "site-a", remote "site-b"
+   [WRN] JetStream has not established contact with a meta leader
+   [INF] JetStream cluster no metadata leader   ← every ~20s, forever
+```
+
+The `JetStream using domains` line confirmed the leaf link was
+connecting (each side saw the peer's domain), but the
+`metadata leader` election never converged. Single-node clusters
+can't elect a meta-leader, so AccountInfo returned 503 forever.
+
+The cause was a leftover from an earlier topology era: each conf
+still carried
+
+```
+   cluster: {
+     name: site-X
+     listen: 0.0.0.0:6222
+     routes: [nats://nats-site-X:6222]   ← self-route
+   }
+```
+
+That `cluster:` block was originally added to give the `$SYS`
+account a cluster transport when running `gateway:` + `jetstream:`
+together (a gateway-era requirement). With the transport switched
+to leafnodes, the `$SYS`-via-cluster requirement is gone — but the
+side effect (clustered JS demanding leader election) remained.
+
+**Fix in the test tool (this commit):**
+Stripped the `cluster: {…}` block from both
+`internal/infra/nats.gateway.site-{a,b}.conf`. JetStream now runs
+standalone on each node. The leaf link continues to carry inter-
+site traffic as designed; no `$SYS` warnings reappeared.
+
 ### Where the chat-app team picks up
 
 This finding is a report on what the test tool needed to mirror
