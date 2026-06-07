@@ -1,0 +1,58 @@
+scenario: infra-sanity-rooms-pipeline-site-b
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §8 (sanity test convention)
+status: approved
+tag: positive
+
+# Mirror of infra-sanity-rooms-pipeline-site-a but on site-b. Together
+# they prove BOTH sites' rooms pipelines are functional. A
+# multi-site stack where site-a passes but site-b fails (or vice
+# versa) means one side's services / Mongo / streams are broken;
+# don't read any cross-site or federation finding until BOTH sanity
+# tests are green.
+#
+# Tagged status: approved — gates CI.
+
+sites:
+  site-b:
+    seed:
+      users:
+        bob:    { verified: true }
+        helper: { verified: true }
+
+input:
+  site: site-b
+  verb: nats_request
+  subject: chat.user.${bob.account}.request.room.site-b.create
+  payload:
+    name: SanityRoomB
+    users: ["${helper.account}"]
+  credential: ${bob.credential}
+
+expected:
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+        roomType: channel
+
+  - location: jetstream_consume
+    site: site-b
+    args:
+      stream: ROOMS_site-b
+      filter_subject: chat.room.canonical.site-b.>
+    match:
+      body_json:
+        name: SanityRoomB
+        requesterAccount: ${bob.account}
+        requesterId: ${bob.id}
+
+  - location: mongo_find
+    site: site-b
+    args:
+      collection: rooms
+      filter:
+        name: SanityRoomB
+    match:
+      name: SanityRoomB
+      type: channel
+      siteId: site-b

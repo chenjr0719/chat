@@ -96,6 +96,26 @@ When the failure points at a gap outside the tool's scope, the tool's
 job is done: the system's verbatim error is the finding. What to do
 about it lives wherever ops decisions live, not here.
 
+### Infra-sanity scenarios — the harness's own health check
+
+Scenarios named `infra-sanity-*` (`status: approved`) verify the
+stack itself before any app-behavior scenario is even attempted. They
+are the harness's first line of defence: if an infra-sanity scenario
+fails, downstream failures are not informative and reading them
+wastes time. Authoring rules for sanity tests live in
+`AUTHORING.md`. The convention exists because the alternative — a
+single suite that mixes app tests with implicit stack assumptions —
+hides failures that should stop the run.
+
+### Assertion completeness — a scenario authoring discipline
+
+For every fire that exercises a multi-step pipeline, assert at every
+layer the pipeline can be observed at (reply, originating stream,
+intermediate streams, peer-site streams, downstream persistence,
+logs). Skipping intermediate layers makes failures ambiguous and
+lets silent correctness drift survive refactors. The full discipline
+and worked examples live in `AUTHORING.md`.
+
 ### What a failing scenario means
 
 A scenario failure is **NOT** evidence of a tool bug by default. The

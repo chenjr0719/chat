@@ -123,6 +123,83 @@ message-bucket partition key from the resolved `created_at` column.
 
 ---
 
+## Authoring discipline — assert at every observable layer
+
+A scenario fires one verb and observes its effects. When the verb
+exercises a multi-step pipeline (request → handler → stream → worker
+→ database → cross-site), the natural temptation is to assert only
+the final observable — the database row, the federated event — and
+treat everything in between as "if the end is right, the middle was
+right." That leaves the suite blind in two important ways:
+
+1. **Failure localisation.** When the final observable doesn't
+   arrive, "which layer was broken?" requires reading container logs.
+   The suite should pinpoint it.
+
+2. **Silent correctness drift.** If a refactor changes an
+   intermediate event shape or skips it entirely, the final
+   observable may still arrive (via some other path) and the
+   scenario stays green while a real regression sits underneath.
+
+**Discipline:** for each fire, enumerate every layer the pipeline
+can be observed at, and assert at each. The cost is a few extra
+`expected[]` blocks; the benefit is that failures name the broken
+layer themselves.
+
+Observable layers, in typical order:
+
+| Layer | Reader primitive | What it proves |
+|-------|------------------|----------------|
+| Synchronous reply | `reply` | The handler accepted the request and replied. |
+| Local Mongo / Cassandra | `mongo_find` / `cassandra_select` | The state mutation persisted. |
+| Local JetStream canonical | `jetstream_consume` | The originating service published the event. |
+| Local OUTBOX (cross-site cases) | `jetstream_consume` | The worker emitted the federation event locally — before the gateway gets involved. |
+| Peer-site INBOX | `jetstream_consume` (with `site:` set) | The federation Source delivered. |
+| Peer-site persistence | `mongo_find` / `cassandra_select` | The peer's worker consumed and applied. |
+| Service logs | `logs_tail` | Last-resort diagnostic when events skip layers. |
+
+If a layer is **skipped** from `expected[]`, the suite either trusts
+it implicitly (fine for layers that are uninteresting to the
+scenario's theme) or the author has chosen to be ambiguous about
+where a failure originated (avoid).
+
+For cross-site federation tests in particular, the OUTBOX-on-the-
+firing-site assertion is the single most diagnostic block: it
+distinguishes "the local worker published" from "the federation
+Source didn't deliver." Always include it.
+
+---
+
+## Infra-sanity scenarios — the harness's first line of defence
+
+Scenarios prefixed `infra-sanity-` are reserved for tests that
+verify the harness itself + the multi-site stack are healthy enough
+for any downstream finding to be meaningful. Conventions:
+
+- File name: `infra-sanity-<what>-site-<a|b>.yaml`
+- `status: approved` (gates CI). A failing infra-sanity scenario
+  means downstream failures are not informative; fix the infra
+  first.
+- The fire is a minimal, well-known production code path (room
+  create, message send, auth mint) — nothing exotic.
+- The `expected[]` list covers every observable layer for the chosen
+  fire, so a sanity failure already localises the broken layer.
+
+Currently shipped:
+
+| File | Proves |
+|------|--------|
+| `infra-sanity-rooms-pipeline-site-a.yaml` | site-a NATS req/reply, MESSAGES + ROOMS streams, per-site Mongo, room-service + room-worker chain. |
+| `infra-sanity-rooms-pipeline-site-b.yaml` | Same shape on site-b — proves the symmetric site is functional. |
+
+NATS supercluster gateway delivery is implicitly tested by the
+`cross-site-room-rename-federation.yaml` scenario; we do not ship a
+gateway-isolated sanity test because user-account credentials don't
+have permission to publish on backend subjects, and the federation
+scenario surfaces gateway-or-Source failures clearly enough.
+
+---
+
 ## `pre_fire_scripts:` — escape hatch for state the seed grammar can't express
 
 Some pre-conditions are operationally-scaffolded (a JetStream stream

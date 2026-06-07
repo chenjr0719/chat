@@ -1,0 +1,67 @@
+scenario: infra-sanity-rooms-pipeline-site-a
+source: spec docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md §8 (sanity test convention)
+status: approved
+tag: positive
+
+# Infra sanity test for site-a's rooms pipeline. Asserts every
+# observable layer the create-room flow touches on site-a so a
+# failure localises the broken layer instead of forcing the operator
+# to read container logs.
+#
+# Tagged status: approved — gates CI. If this fails, downstream
+# scenario failures are not informative; fix the infra first.
+#
+# Observable layers, in pipeline order:
+#   1. NATS reply              (room-service-site-a accepted the request)
+#   2. ROOMS_site-a canonical  (room-service-site-a published canonical event)
+#   3. site-a rooms collection (room-worker-site-a consumed canonical,
+#                              wrote to Mongo)
+#
+# A passing run proves: NATS request/reply, MESSAGES_site-a stream,
+# ROOMS_site-a stream, per-site Mongo handle, room-service handler
+# chain, room-worker consumer + write path are ALL working on site-a.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob:   { verified: true }
+
+input:
+  site: site-a
+  verb: nats_request
+  subject: chat.user.${alice.account}.request.room.site-a.create
+  payload:
+    name: SanityRoomA
+    users: ["${bob.account}"]
+  credential: ${alice.credential}
+
+expected:
+  - location: reply
+    match:
+      body_json:
+        status: accepted
+        roomType: channel
+
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: ROOMS_site-a
+      filter_subject: chat.room.canonical.site-a.>
+    match:
+      body_json:
+        name: SanityRoomA
+        requesterAccount: ${alice.account}
+        requesterId: ${alice.id}
+
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: rooms
+      filter:
+        name: SanityRoomA
+    match:
+      name: SanityRoomA
+      type: channel
+      siteId: site-a
