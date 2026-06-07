@@ -55,7 +55,7 @@ NATS_CONF="$DOCKER_LOCAL/nats.conf"
 BACKEND_CREDS="$DOCKER_LOCAL/backend.creds"
 NATS_BOX_IMAGE="natsio/nats-box:latest"
 
-REQUIRED_EXPORT_SUBJECT='$JS.>'
+REQUIRED_EXPORT_NAME='CrossDomainJSAPI'
 
 echo "=== setup-jwt-supercluster — multi-site JS Sources prep ==="
 echo ""
@@ -106,14 +106,19 @@ check_jwt_supports_supercluster() {
   fi
 
   # JWTs are header.payload.signature in base64url. Decode the payload
-  # and look for the required export subject.
+  # and look for our named export. Matching the EXPORT NAME (instead of
+  # the subject) sidesteps JSON encoding quirks — nsc stores ">" as
+  # ">" in the JWT's JSON, so a literal "$JS.>" grep would never
+  # match even when the export is present. The name we chose is
+  # unique to our mutation; nothing else writes "CrossDomainJSAPI"
+  # into a chatapp JWT.
   local payload
   payload=$(echo "$account_jwt" \
     | cut -d. -f2 \
     | tr '_-' '/+' \
     | base64 -d 2>/dev/null || true)
 
-  echo "$payload" | grep -q -F "$REQUIRED_EXPORT_SUBJECT"
+  echo "$payload" | grep -q -F "$REQUIRED_EXPORT_NAME"
 }
 
 if check_jwt_supports_supercluster; then
