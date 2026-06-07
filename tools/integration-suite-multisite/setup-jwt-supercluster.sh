@@ -190,7 +190,7 @@ docker run --rm \
     nsc add export --account chatapp --service \
       --subject "\$JS.>" \
       --name "CrossDomainJSAPI" \
-      --response-type stream \
+      --response-type Stream \
       2>&1 | sed "s/^/  /"
 
     nsc describe operator --raw > /output/operator.jwt
