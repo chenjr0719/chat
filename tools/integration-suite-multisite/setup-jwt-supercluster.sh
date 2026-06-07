@@ -151,6 +151,17 @@ echo ""
 #   - whether resolver_preload needs any additional account JWT
 #     entries
 #
+# VERIFICATION TARGET (from Run 54, recorded in F-001):
+#   after this body lands + setup-jwt is run + scenario re-runs,
+#   probe of INBOX_site-b's Source must show:
+#     cfg.sources[0].domain   = "site-a"   (currently "")
+#     state.sources[0].active = > 0         (currently -1ns)
+#     state.sources[0].lag    ≥ 0
+#     msgs                    > 0
+#   if cfg.sources[0].domain still nulls, export/import shape is
+#   wrong. see docs/integration-suite-multisite-findings.md F-001
+#   §"Verification target" for the full reproducer.
+#
 # Until the nsc body is filled in, this script fails loudly so the
 # operator knows the fix isn't applied yet. The framework around the
 # nsc bit (idempotency check, backup, re-verify, restoration on

@@ -132,6 +132,56 @@ test-tool-side mitigation. It is:
 Invocation: `make -C tools/integration-suite-multisite setup-jwt`.
 Once per machine. Re-running on an already-correct JWT is a no-op.
 
+### Verification target for the nsc body work
+
+Run 54 (with `prep-outbox.sh` already provisioning the OUTBOX streams
+via `pre_fire_scripts`, the JWT untouched) gave the nsc body author
+a binary pass criterion. After the nsc invocations land in
+`setup-jwt-supercluster.sh` and the operator runs it, a fresh
+federation-scenario run must produce ALL of the following:
+
+```
+   federation scenario Surface 5 passes within 15s timeout
+   
+   post-scenario probe of INBOX_site-b (via backend.creds on NATS-B):
+     cfg.sources[0].domain    = "site-a"     (currently "")
+     state.sources[0].active  = > 0          (currently -1ns)
+     state.sources[0].lag     ≥ 0            (Source actively pulling)
+     msgs                     > 0            (event delivered)
+   
+   OUTBOX_site-a continues to show msgs=1 firstSeq=1 (unchanged)
+```
+
+If `cfg.sources[0].domain` still nulls after the JWT mutation, the
+export/import shape is wrong — NATS only retains the Domain field
+when the account JWT permits validation of the peer.
+
+Reproducer for an nsc body developer:
+
+```
+   1. Build the createoutbox probe at /tmp/create-outbox (see
+      tester's run notes for the source — uses
+      jetstream.NewWithDomain to inspect streams locally).
+   2. Wire pre_fire_scripts: [prep-outbox.sh] in
+      scenarios/drafts/cross-site-room-rename-federation.yaml
+      (uncommitted operator hook).
+   3. USE_INFRA=true make -C tools/integration-suite-multisite local
+   4. Probe both NATSes after "stack ready":
+        OUTBOX_site-a → msgs > 0 ✓ (production publish path works)
+        INBOX_site-b  → msgs = 0, domain = "" (current state)
+   5. Implement the nsc body in setup-jwt-supercluster.sh.
+   6. make -C tools/integration-suite-multisite setup-jwt
+   7. Re-run from step 3. Probe must show INBOX_site-b's Source
+      with domain = "site-a", state.active > 0, msgs > 0.
+```
+
+Out of scope for the nsc body:
+
+- Surfaces 1–4 are already green; the JWT change doesn't need to
+  re-prove them.
+- `prep-outbox.sh` continues to provision the OUTBOX streams. That is
+  a separate operator concern (stream creation, not JWT scope).
+
 ### Why this exception is named explicitly in the limits doc
 
 `ARCHITECTURE.md` §0 lists exactly one exception to "the tool does
