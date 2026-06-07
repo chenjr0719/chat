@@ -156,3 +156,8 @@ docker ps -aq | wc -l    # expect 0 — confirms clean teardown
   a new multi-site scenario.
 - `tools/integration-suite-multisite/SCENARIO-REFERENCE.md` — YAML
   grammar reference, substitution tokens, loader errors.
+- `docs/integration-suite-multisite-findings.md` — durable log of
+  findings the suite has surfaced (tool / app / ops). Consult when
+  triaging a scenario failure: it may already be documented as a
+  known operational gap that lives outside both the tool's and the
+  app's scope.
