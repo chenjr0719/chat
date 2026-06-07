@@ -297,6 +297,84 @@ now both filters (NATS only pulls matching subjects) and rewrites.
 Same Source/Destination pair as before; one duplicate filter
 removed.
 
+### Follow-up — Run 68: Source 10059 with standalone JS
+
+The 10137 cleared. Source state on INBOX_site-b shows the config
+landed correctly:
+
+```
+   cfg.sources[0]:
+     name=OUTBOX_site-a
+     external.api="$JS.site-a.API"   ← Domain→External mapping correct
+     external.deliver=""
+     transform[0]:
+       src="outbox.site-a.to.site-b.>"
+       dest="chat.inbox.site-b.aggregate.>"
+   state.sources[0]:
+     active=-1ns                     ← never activated
+     lag=0
+   INBOX_site-b.msgs = 0
+```
+
+But every Source retry tick (~13s), both NATS containers log:
+
+```
+   [WRN] JetStream error response for stream INBOX_site-b
+         create source consumer OUTBOX_site-a:
+         stream not found (10059)
+```
+
+Two paths diverge:
+
+- **Client probe via leaf** —
+  `NewWithDomain(ncB, "site-a").Stream("OUTBOX_site-a").Info()` →
+  `msgs=1`. The `$JS.site-a.API.STREAM.INFO.OUTBOX_site-a` request
+  reaches NATS-A and returns correctly.
+- **Source-fetcher's internal CONSUMER.CREATE** — same prefix,
+  but returns 10059 instead.
+
+The most plausible explanation: standalone JetStream (no `cluster:`
+block at all, after Run 60-61's strip) skips JS meta-leader
+activation. The meta-leader is what publishes cross-domain
+interest in `$JS.<peer>.API.>` over the leafnode link.
+Client requests work because they target subjects with active
+interest from NATS-A's chatapp JS subscription, propagated via
+the leaf user account scope. Source-fetcher's internal
+consumer-create uses a server-internal path that doesn't pick up
+the same interest unless JS meta is active.
+
+Run 60-61's hang (`no metadata leader` forever) was caused not by
+clustering itself but by the **self-route** in the cluster block,
+which made NATS wait for a peer that never came. A cluster block
+of size 1 with NO routes elects itself instantly (quorum = 1,
+votes = 1), giving meta-leader activation without hang.
+
+**Experiment in this commit:**
+Re-added `cluster: { name: site-X; listen: 0.0.0.0:6222 }` to both
+`internal/infra/nats.gateway.site-{a,b}.conf` — single-node
+cluster, no routes. Hypothesis: meta-leader elects immediately,
+cross-domain JS interest propagates over the leaf, source-fetcher
+CONSUMER.CREATE succeeds, INBOX_site-b receives federated events.
+
+If this experiment fails the same way, the gap is genuinely a
+NATS-server-internal cross-domain Source mechanism that single-
+account leafnodes don't bridge — at which point the chat-app
+team's SRE input is required (likely: bridge `$SYS` via a separate
+leafnode connection, or switch production topology to hub-and-
+spoke with one site as the JS-meta hub).
+
+### Adjacent fix in this commit — Surface 5 subject
+
+The scenario `cross-site-room-rename-federation.yaml` Surface 5
+was filtering on the pre-transform subject
+(`outbox.site-a.to.site-b.room_renamed`). Once the
+SubjectTransform writes the message into INBOX_site-b as
+`chat.inbox.site-b.aggregate.room_renamed`, the original filter
+would never match — even if the Source delivered cleanly. The
+Surface 5 assertion has been corrected to filter on the
+post-transform subject, matching what inbox-worker's consumer
+actually binds to.
+
 ### Where the chat-app team picks up
 
 This finding is a report on what the test tool needed to mirror

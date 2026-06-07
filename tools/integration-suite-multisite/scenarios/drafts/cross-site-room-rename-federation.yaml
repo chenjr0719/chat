@@ -129,18 +129,17 @@ expected:
     timeout: 10s
 
   # Surface 5 — federation tail on site-b. The Source on INBOX_site-b
-  # sources OUTBOX_site-a with filter outbox.site-a.to.site-b.> —
-  # the rename envelope arrives here. Same envelope as Surface 4,
-  # asserted again on the peer side to prove delivery. Failure here
-  # ALONE (with Surface 4 green) localises the bug to the federation
-  # Source delivery, which in our current trust-chain config
-  # requires `$JS.>` export/import in the operator JWT (ops/IaC
-  # concern, outside the tool's scope per ARCHITECTURE.md §0).
+  # sources OUTBOX_site-a with filter outbox.site-a.to.site-b.> AND a
+  # SubjectTransform that rewrites the inbound subject to
+  # chat.inbox.site-b.aggregate.> before storing — matching
+  # pkg/stream.Inbox()'s declared schema and inbox-worker's consumer
+  # bind. So the same envelope as Surface 4 arrives here under the
+  # post-transform subject, not the raw outbox.* form.
   - location: jetstream_consume
     site: site-b
     args:
       stream: INBOX_site-b
-      filter_subject: outbox.site-a.to.site-b.room_renamed
+      filter_subject: chat.inbox.site-b.aggregate.room_renamed
     match:
       body_json:
         type: room_renamed
