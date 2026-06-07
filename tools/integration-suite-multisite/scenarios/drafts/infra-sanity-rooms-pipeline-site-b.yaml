@@ -56,3 +56,18 @@ expected:
       name: SanityRoomB
       type: channel
       siteId: site-b
+
+  # Subscriptions row for bob (the creator) — mirrors site-a's surface 4.
+  # See infra-sanity-rooms-pipeline-site-a.yaml for the regression
+  # rationale.
+  - location: mongo_find
+    site: site-b
+    args:
+      collection: subscriptions
+      filter:
+        name: SanityRoomB
+        u.account: ${bob.account}
+    match:
+      name: SanityRoomB
+      roomType: channel
+      siteId: site-b

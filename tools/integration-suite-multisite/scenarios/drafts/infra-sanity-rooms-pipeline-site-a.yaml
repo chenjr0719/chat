@@ -65,3 +65,22 @@ expected:
       name: SanityRoomA
       type: channel
       siteId: site-a
+
+  # Subscriptions row for alice (the creator). room-worker writes one
+  # subscription per room member on canonical-consume (room-worker/
+  # handler.go: BulkCreateSubscriptions call). A regression where
+  # room-worker writes the room but skips the bulk-create-subscriptions
+  # step would pass the rooms assertion above and silently leave members
+  # unsubscribed. Asserting alice's subscription (rather than just the
+  # row count) lets us verify the room name mirror landed too.
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: subscriptions
+      filter:
+        name: SanityRoomA
+        u.account: ${alice.account}
+    match:
+      name: SanityRoomA
+      roomType: channel
+      siteId: site-a

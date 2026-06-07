@@ -115,3 +115,24 @@ expected:
       msg: hello from integration test
       site_id: site-a
     timeout: 10s
+
+  # Surface 4 — Cassandra row in messages_by_room, the room timeline
+  # table the history-service reads for LoadHistory pagination.
+  # message-worker writes messages_by_id + messages_by_room in the same
+  # UnloggedBatch (message-worker/store_cassandra.go); a regression
+  # that drops one write while keeping the other would pass Surface 3
+  # but silently break the room timeline. ALLOW FILTERING is used here
+  # because the table's bucket partition key is a function of
+  # created_at + MESSAGE_BUCKET_HOURS that the scenario grammar can't
+  # express in args; the dataset is tiny (sandbox truncates at Setup)
+  # so the filter cost is negligible.
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_room WHERE room_id = ? ALLOW FILTERING"
+      params: [r-general]
+    match:
+      message_id: m1pipeline00send001a
+      room_id: r-general
+      msg: hello from integration test
+      site_id: site-a
+    timeout: 10s

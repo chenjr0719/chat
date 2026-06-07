@@ -146,3 +146,26 @@ expected:
         siteId: site-a
         destSiteId: site-b
     timeout: 15s
+
+  # Surface 6 — federation effect applied on site-b. inbox-worker-site-b
+  # consumes the aggregate event and runs UpdateSubscriptionNamesForRoom
+  # (inbox-worker/handler.go:296 → main.go:209 UpdateMany on the
+  # subscriptions collection with $set: {name: <newName>}). bob's
+  # subscription mirror on site-b ends up with the renamed name.
+  #
+  # This is the user-visible point of federating a rename. Surfaces 1-5
+  # prove the event was published, routed, and received; Surface 6
+  # proves it was applied. A regression that drops the Mongo update
+  # while keeping the consume would pass Surfaces 1-5 and silently
+  # ship broken — Surface 6 is what stops that.
+  - location: mongo_find
+    site: site-b
+    args:
+      collection: subscriptions
+      filter:
+        roomId: r-shared
+        u.account: ${bob.account}
+    match:
+      name: SharedChannelRenamed
+      roomId: r-shared
+    timeout: 15s
