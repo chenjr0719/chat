@@ -230,12 +230,11 @@ including `$JS.<domain>.API.*` — across the link, which is exactly
 what cross-domain Sources need.
 
 Each server runs **standalone JetStream** — no `cluster:` block.
-This boots cleanly and lets Surfaces 1-4 of cross-site scenarios
-pass, but Surface 5 (federated delivery into peer INBOX) is
-blocked by a NATS topology question the test tool can't answer
-unilaterally. F-001 documents the empirically-explored design
-space (no cluster / cluster-with-self-route / cluster-without-
-routes) and the open question for the chat-app team's SRE input.
+Combined with the SubjectTransform on the federation Source (§2)
+and operator-owned `pre_fire_scripts` that stand up OUTBOX before
+the fire, this topology delivers all 5 surfaces of cross-site
+scenarios end-to-end (Run 71). F-001 captures the full
+iteration trail that landed here.
 
 The runner dials each site's NATS directly (not via Toxiproxy) using
 the `WithDomain(siteID)` JetStream option so that stream operations

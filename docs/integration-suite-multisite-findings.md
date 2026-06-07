@@ -31,11 +31,20 @@ local-dev tooling (`docker-local/setup.sh` + the test tool's
 infra config). One was the integration suite's own federation
 applier.
 
-**Status:** Mitigated in the test tool (leafnode transport in
-`internal/infra/nats.gateway.*.conf`, SubjectTransform in
-`internal/infra/federation.go`). Resolution on the chat-app side
-depends on whether production federates over leafnodes or some
-equivalent that carries the JS API across sites.
+**Status:** **RESOLVED in the test tool (Run 71).** Leafnode
+transport + SubjectTransform on the Source + Source-fetcher retry
+tolerance (10059 "stream not found" responses are transient until
+OUTBOX_<site> is created by `pre_fire_scripts`) carries the
+federation tail end-to-end. Scenario
+`cross-site-room-rename-federation.yaml` passes all 5 surfaces in
+12.1s. The "design-space exhausted" framing under "Runs 68-70" was
+wrong about the boot-clean state — it works; the previously
+captured `state.sources[0].active = -1ns` was probed before the
+first successful retry, not as a steady state.
+
+Resolution on the chat-app side depends on whether production
+federates over the same shape; that's documented under "Where the
+chat-app team picks up" below.
 
 ### What we ran
 
@@ -435,6 +444,71 @@ The chat-app team's production federation plan decides which.
 Until then, this finding stays at `observed`, the test tool ships
 the boot-clean two-site stack, and scenarios assert Surfaces 1-4
 cleanly.
+
+#### Run 71 — green end-to-end
+
+The "design space exhausted" conclusion under Runs 68-70 was
+itself a measurement artifact. The boot-clean topology (no
+`cluster:` block, leafnode transport, SubjectTransform on the
+Source, FilterSubject dropped) does deliver Surface 5 — provided
+OUTBOX_<site> exists by the time the Source-fetcher's retry tick
+comes around.
+
+The catch: OUTBOX_<site> isn't created by any chat-app service
+(`RUNBOOK.md` gotcha "OUTBOX_<site> is not created by anyone").
+At federation `Apply` time the source-fetcher's first CONSUMER.
+CREATE returns 10059 because OUTBOX doesn't yet exist. The
+fetcher retries every ~13s. `pre_fire_scripts` (per-scenario,
+operator-owned) stand up OUTBOX before the fire; the next retry
+after that succeeds and the Source activates.
+
+Earlier-run probes that captured `state.sources[0].active = -1ns`
+and `msgs = 0` had snapshotted that pre-OUTBOX window, then
+walked away before the retry that would have flipped it. The
+matrix in Run 70 was technically correct about the FTL corner
+(`cluster:` with no routes) but wrong about the boot-clean
+corner's steady state — it works, eventually, deterministically.
+
+Final scenario timings on Run 71:
+
+```
+   infra-sanity-rooms-pipeline-site-a       206ms   ✓
+   infra-sanity-rooms-pipeline-site-b       207ms   ✓
+   cross-site-seed-visibility               122ms   ✓
+   cross-site-room-rename-federation        12.1s   ✓   (Surface 5 in 15s budget)
+```
+
+All 5 surfaces of `cross-site-room-rename-federation` pass:
+reply, site-a Mongo update, ROOMS_site-a canonical event,
+OUTBOX_site-a envelope, INBOX_site-b federation tail.
+
+#### What chat-app picks up (revised, narrower)
+
+With Run 71 green, the picks-up list collapses:
+
+1. **Decide whether production federates over the same leafnode
+   + SubjectTransform shape.** If yes, mirror the test tool's
+   `internal/infra/nats.gateway.*.conf` and federation `Apply`
+   logic in `docker-local/setup.sh` (multi-site flag) and in the
+   IaC that stands up production NATS clusters. The chat-app's
+   own `pkg/stream/stream.go` `Inbox()` docstring already
+   documents the SubjectTransform shape — the test tool's
+   federation `Apply` is now an executable reference for what
+   the production Sources should look like.
+
+2. **Decide where OUTBOX_<site> is created in production.**
+   `RUNBOOK.md` records that no chat-app service bootstraps it.
+   In the test tool this is operator-owned via `pre_fire_scripts`.
+   Production needs a documented owner: IaC at deploy time, an
+   ops-owned bootstrap container, or (less likely) a designated
+   chat-app service whose responsibility is OUTBOX schema
+   ownership. Until OUTBOX exists, every Source pulling from it
+   will log 10059 retries indefinitely — fine if transient,
+   noise if not.
+
+When both are decided and reflected in `docker-local/setup.sh`,
+this entry can flip from "RESOLVED in the test tool" to
+"RESOLVED end-to-end".
 
 ### Adjacent fix retained — Surface 5 subject
 
