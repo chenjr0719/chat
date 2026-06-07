@@ -83,9 +83,11 @@ expected:
       name: SharedChannelRenamed
 
   # Surface 3 — local canonical event on ROOMS_site-a. room-service-
-  # site-a publishes here so room-worker can consume. If this is
-  # silent, the canonical-publish path is broken (not the federation
-  # path).
+  # site-a publishes here so room-worker can consume. The canonical
+  # event carries the new name under `newName` (not `name`); the
+  # production payload shape — verified verbatim from a failing run's
+  # `reply from system:` line — is
+  #   { account, roomId, newName, timestamp, ... }
   - location: jetstream_consume
     site: site-a
     args:
@@ -93,7 +95,8 @@ expected:
       filter_subject: chat.room.canonical.site-a.>
     match:
       body_json:
-        name: SharedChannelRenamed
+        newName: SharedChannelRenamed
+        roomId: r-shared
 
   # Surface 4 — the OUTBOX publish on site-a. room-worker-site-a
   # detects bob as a remote subscriber (via the remote_users stub
