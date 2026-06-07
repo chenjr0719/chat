@@ -271,11 +271,12 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 }
 
 // openSiteAdmins opens one credentialed admin NATS conn per site so JS
-// API queries hit the LOCAL JetStream for each site. The supercluster
-// gateway carries application traffic but does not (in this trust-chain
-// config) carry the `$JS.<domain>.API` subject across sites — i.e. one
-// admin conn cannot drive both domains via NewWithDomain. The caller
-// is responsible for calling closeAdmins on the returned map.
+// API queries hit the LOCAL JetStream for each site. Even with the
+// leafnode link between sites carrying $JS API, a per-site admin conn
+// is the cheapest correct option: stream config writes (Apply) and
+// stream existence polls (WaitForStream) run against the closer
+// JetStream and don't pay the leaf round-trip. The caller is
+// responsible for calling closeAdmins on the returned map.
 func openSiteAdmins(natsURLBySite map[string]string, repoRoot string) (map[string]*nats.Conn, error) {
 	credsFile := filepath.Join(repoRoot, "docker-local", "backend.creds")
 	admins := make(map[string]*nats.Conn, len(natsURLBySite))

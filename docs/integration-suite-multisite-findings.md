@@ -19,17 +19,23 @@ F-NNN  <one-line title>
 
 ---
 
-## F-001 — multi-site JetStream federation needs JS API exports on the chatapp account
+## F-001 — multi-site JetStream federation needs leafnode transport and a SubjectTransform on the Source
 
-**Surfaced:** Runs 36-54 of the multi-site smoke loop; confirmed by
-standalone NATS supercluster probe alongside Run 46.
+**Surfaced:** Runs 36-58 of the multi-site smoke loop; standalone NATS
+supercluster probes alongside Runs 46 and 58; cross-checked against
+`pkg/stream/stream.go` `Inbox()` docstring and
+`docs/superpowers/specs/2026-04-27-inbox-stream-ownership-design.md`.
 
-**Layer:** chat-app **local-dev tooling** (`docker-local/setup.sh`).
-The chat-app code itself is correct.
+**Layer:** Mixed — see the two gaps below. One is chat-app
+local-dev tooling (`docker-local/setup.sh` + the test tool's
+infra config). One was the integration suite's own federation
+applier.
 
-**Status:** Mitigated in test tool via
-`tools/integration-suite-multisite/setup-jwt-supercluster.sh`
-(best-effort; see "Recommendation" below).
+**Status:** Mitigated in the test tool (leafnode transport in
+`internal/infra/nats.gateway.*.conf`, SubjectTransform in
+`internal/infra/federation.go`). Resolution on the chat-app side
+depends on whether production federates over leafnodes or some
+equivalent that carries the JS API across sites.
 
 ### What we ran
 
@@ -38,7 +44,7 @@ Scenario `cross-site-room-rename-federation.yaml`:
 ```
    alice@site-a fires room.rename on a room whose subscribers include
    bob@site-b. We assert at five layers:
-   
+
    Surface 1   reply: accepted                       ─┐
    Surface 2   site-a Mongo: rooms.name updated      ─┤  site-a
    Surface 3   ROOMS_site-a canonical event          ─┤  layer
@@ -49,7 +55,8 @@ Scenario `cross-site-room-rename-federation.yaml`:
 
 ### What we observed
 
-Surfaces 1-4 pass cleanly. Surface 5 times out at 15s with zero events.
+Surfaces 1-4 pass cleanly. Surface 5 timed out at 15s with zero
+events, regardless of JWT exports on the chatapp account.
 
 A standalone probe of NATS state, taken while the stack was live and
 the rename publish had completed:
@@ -60,7 +67,7 @@ the rename publish had completed:
        firstSeq   = 1, lastSeq = 1
        → room-worker-site-a's publish ran clean.
          the chat-app federation publish path is healthy.
-   
+
    INBOX_site-b    (site-b's local JS, backend.creds):
        msgs       = 0
        cfg.sources[0]:
@@ -70,14 +77,9 @@ the rename publish had completed:
        state.sources[0]:
            active  = -1ns            ← Source never activated
            lag     = 0
-       → the federation Source was configured with Domain="site-a"
-         (via UpdateStream in internal/infra/federation.go), but NATS
-         silently nulled it because the chatapp account JWT does not
-         declare any cross-domain JS API subjects as routable.
 ```
 
-Additionally, the probe confirmed the supercluster gateway itself
-works fine for Core NATS subjects:
+A side probe of the supercluster gateway path:
 
 ```
    Test                                                     Result
@@ -88,144 +90,108 @@ works fine for Core NATS subjects:
        error: "nats: no responders available for request"
 ```
 
-So the failure is specifically: **NATS will not forward
-`$JS.<peer-domain>.API.*` requests across the supercluster gateway
-without account-level scope that declares those subjects as
-exports.**
+So Core NATS traversed the gateway, but `$JS.<peer>.API.*`
+requests did not.
 
-### What this tells the chat-app team
+### The two gaps
 
-Your code is correct.
+After running through the hypotheses (Runs 46, 58), the failure
+decomposed into two distinct gaps:
 
-- `pkg/stream/stream.go` Outbox subjects: correct.
-- `pkg/subject.Outbox(site, dest, type)`: correct.
-- `room-worker/handler.go` cross-site member detection and
-  `outbox.*.to.*.*` publish: correct.
-- `room-service/handler.go` rename handler: correct.
-- `federation.yaml`: declares Sources correctly.
+**Gap 1 — transport.** NATS supercluster **gateways do not carry
+`$JS.<peer>.API.*` across clusters.** This is a structural property
+of the gateway protocol, not a permissions issue: a JWT-level
+`$JS.>` service export on the chatapp account (tested in Run 58) is
+necessary-but-not-sufficient, because the gateway protocol itself
+doesn't advertise JS-API responders cross-cluster.
 
-Production deployed against an SRE-provisioned trust chain with the
-right exports would work as designed. The gap is between your
-production-deployment assumption and your local-dev mirror's trust
-chain.
+The transport that does carry the JS API between clusters is
+**NATS leafnodes**. Two NATS servers connected over a leaf link
+expose their full account subject space, including the
+`$JS.<domain>.API.*` subjects that JetStream Sources call out to
+when pulling messages from a remote domain.
 
-### Where the fix belongs in your project
+**Gap 2 — SubjectTransform missing on the integration suite's
+federation Source.**
 
-**`docker-local/setup.sh`** is the local-dev mirror of your trust
-chain. It currently generates a single-site-shaped operator JWT —
-appropriate when the chat app was single-site, no longer sufficient
-now that the project supports multi-site federation.
-
-Extending `docker-local/setup.sh` to optionally generate a
-multi-site-capable trust chain would resolve F-001 and let any
-developer iterating on multi-site federation features verify their
-work locally. Shape:
+`pkg/stream/stream.go`'s `Inbox()` docstring is explicit (lines
+64-69):
 
 ```
-   docker-local/setup.sh                        (existing — single-site)
-   docker-local/setup.sh --multi-site           (proposed)
-       does what setup.sh does today, plus:
-       adds a service export on the chatapp account permitting
-       cross-cluster $JS.> subjects to be routed through the
-       gateway. uses nsc:
-       
-         nsc add export --account chatapp --service \
-             --subject "\$JS.>" \
-             --name "CrossDomainJSAPI" \
-             --response-type stream
-       
-       (exact export shape may need iteration — the test tool's
-        setup-jwt-supercluster.sh is the best-effort starting point.)
+   chat.inbox.{siteID}.aggregate.>
+     Federated events sourced from remote OUTBOX streams. These
+     land here via a JetStream SubjectTransform that rewrites
+     outbox.{remote}.to.{siteID}.> → chat.inbox.{siteID}.aggregate.>
+     on the way into this stream.
 ```
 
-### What we did in the test tool meanwhile
+And the inbox-worker consumer is bound to
+`chat.inbox.{site}.aggregate.>`, not to `outbox.>`. The test tool's
+`internal/infra/federation.go` `Apply` was configuring the Source
+with `Name + FilterSubject + Domain` only, **without** the
+`SubjectTransform`. Even with leafnode transport in place, the
+inbox-worker consumer would never see the federated message,
+because the source-delivered subject would still be `outbox.*`,
+which falls outside the consumer's bind filter.
 
-`tools/integration-suite-multisite/setup-jwt-supercluster.sh` is the
-test-tool-side stop-gap (sanctioned by the test tool's
-`ARCHITECTURE.md` §0 "developer-audience setup-time prep" exception,
-which has four criteria; all four are satisfied here).
+The chat-app design treats `Sources + SubjectTransforms` as
+ops/IaC territory (see `docs/superpowers/specs/2026-04-27-
+inbox-stream-ownership-design.md` — non-goal "Multi-site
+federation in local dev"). The test tool standing in for ops/IaC
+in local-dev MUST mirror the production federation shape — Source
+**plus** SubjectTransform — not just the Source half.
 
+### What we did in the test tool
+
+`tools/integration-suite-multisite/internal/infra/nats.gateway.
+{site-a,site-b}.conf` now use **leafnodes** instead of gateways
+for cross-site transport:
+
+- site-a runs a leafnode hub on `:7422`.
+- site-b's `remotes:` block dials `nats-leaf://nats-site-a:7422`
+  using `docker-local/backend.creds` (chatapp account user). The
+  test tool mounts `backend.creds` into both NATS containers via
+  `internal/infra/deps.go`.
+
+`tools/integration-suite-multisite/internal/infra/federation.go`
+`Apply` now attaches a `SubjectTransform` to each Source it
+configures, matching the shape documented in `pkg/stream.Inbox`:
+
+```go
+SubjectTransforms: []jetstream.SubjectTransformConfig{{
+    Source:      "outbox.site-a.to.site-b.>",     // = s.Filter
+    Destination: "chat.inbox.site-b.aggregate.>", // = peer-INBOX subject
+}}
 ```
-   make -C tools/integration-suite-multisite setup-jwt
-```
 
-The script regenerates the trust chain with a `$JS.>` service export
-on the chatapp account. It is:
-
-- idempotent (no-op on already-extended trust chain)
-- self-backing-up (`nats.conf.bak-<timestamp>`,
-  `backend.creds.bak-<timestamp>`)
-- self-verifying (the JWT-mutation half — restores backups if the
-  export doesn't land in the JWT)
-- empirically validated only at the JWT-content level (see below)
-
-### Empirical result — Run 58: export is necessary but NOT sufficient
-
-After running `make setup-jwt` and restarting the stack, the
-federation Source state probe shows **no change**:
-
-```
-                       before make setup-jwt    after make setup-jwt
-   ─────────────────   ──────────────────────   ──────────────────────
-   cfg.sources[0].domain     ""                       ""
-   state.sources[0].active  -1ns                     -1ns
-   INBOX_site-b msgs         0                        0
-   OUTBOX_site-a msgs        1 (publish works)        1 (publish works)
-```
-
-The `$JS.>` service export landed in the chatapp account JWT
-correctly. NATS still strips `Source.Domain` at runtime. The
-account-level service export alone does not unlock cross-domain JS
-API delivery in this trust-chain topology.
-
-This is a precise, useful empirical result: the export is in the
-class of changes the trust chain needs, but it isn't the complete
-shape. There are at least two directions the chat-app team's
-SRE/platform people could investigate next:
-
-**Possibility A — `$JS.*` responders live on the system account.**
-
-JetStream's API subjects are conventionally serviced by the system
-account (`$SYS`), not the per-application account. Even with the
-chatapp account permitted to publish to `$JS.>`, the responder side
-of the request/reply may live on `$SYS` and the gateway may not be
-advertising the route to it. Worth checking:
-
-- whether the sys account needs a cross-cluster export/import
-- whether the gateway block in `nats.conf` needs an explicit
-  `system_account` directive or `jetstream` permissions
-- whether `nats server check jetstream` reports cross-domain
-  reachability after the chatapp export lands
-
-**Possibility B — topology choice.**
-
-The operator/JWT + supercluster-gateway + single-account-spanning-
-both-clusters shape may simply not support cross-domain JetStream
-Sources cleanly. Some NATS deployments use:
-
-- **Leafnodes** instead of gateway peers, with explicit JetStream
-  account import on the leaf side
-- **Single JS domain** spanning both clusters (drop the
-  `domain: site-a`/`site-b` distinction in the nats.gateway.*.conf
-  files), so there's no "cross-domain" call to fail in the first
-  place
-
-Both are larger changes than another JWT tweak. They're production
-shape decisions, not local-dev tooling tweaks.
+These changes are infra-layer — the scenario YAML grammar, reader
+and verb primitives, sandbox model, and runner flow are
+**unchanged**.
 
 ### Where the chat-app team picks up
 
-The test tool has reached the end of what a shell script can answer.
-The next iteration belongs to whoever owns the chat-app project's
-multi-site production deployment plan:
+This finding is a report on what the test tool needed to mirror
+production federation in local-dev. The chat-app team owns the
+production federation topology decision; the questions to answer:
 
-1. Decide which of Possibilities A / B is the production topology
-   you're committing to.
-2. Update `docker-local/setup.sh` (or its sibling) to match.
-3. When the local-dev trust chain delivers the federation
-   end-to-end, this entry's status flips to "resolved" and the
-   test-tool-side `setup-jwt-supercluster.sh` becomes dead code
-   (delete it, the `setup-jwt` make target, and the
-   `ARCHITECTURE.md` §0 exception).
+1. **Does production federate cross-cluster via leafnodes?** If
+   yes, this finding flips to `resolved` once that's confirmed and
+   `docker-local/setup.sh` (or a sibling) grows multi-site support
+   that mirrors the production topology.
+
+2. **Does production rely on Sources carrying the
+   SubjectTransform, or some other mechanism (e.g. an ingress
+   subject-mapping at the cluster level)?** The `pkg/stream.Inbox`
+   docstring documents the per-Source transform, which is what the
+   test tool now mirrors. If production uses a different shape,
+   the docstring and the test tool both need to update to match.
+
+3. The earlier `setup-jwt-supercluster.sh` script + `make
+   setup-jwt` target + `ARCHITECTURE.md` §0 "developer-audience
+   setup-time prep" exception have been removed from the test
+   tool. Run 58 proved the JWT-export hypothesis was not the right
+   diagnosis; the transport choice was. Leaving deprecated
+   scaffolding around would only mislead the next person reading
+   the finding.
 
 ---

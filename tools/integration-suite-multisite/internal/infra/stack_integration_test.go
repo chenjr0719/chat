@@ -31,7 +31,7 @@ func TestCreateNetwork_ReturnsUniqueNameWithRunIDSuffix(t *testing.T) {
 }
 
 func TestStartNATS_ReachableOnHostPort(t *testing.T) {
-	t.Skip("multi-site refactor pending: startNATS now requires gateway conf file on disk; covered by Task 21 smoke run")
+	t.Skip("multi-site refactor pending: startNATS now requires per-site topology conf + backend.creds on disk; covered by Task 21 smoke run")
 	ctx := context.Background()
 	nw, _, err := createNetwork(ctx)
 	require.NoError(t, err)

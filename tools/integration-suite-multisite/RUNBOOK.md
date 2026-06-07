@@ -21,19 +21,10 @@ git fetch origin && git checkout claude/integration-test-automation-LXQHP && git
 
 # 3. Generate the NATS trust-chain files (operator/account keys,
 #    backend.creds, .env). Required for the infra — the NATS and auth
-#    containers mount these files.
+#    containers mount these files. The multi-site infra also mounts
+#    backend.creds into both NATS containers so site-b's leafnode
+#    remote can authenticate into site-a.
 cd docker-local && ./setup.sh && cd ..
-
-# 4. Extend the trust chain for multi-site federation tests. This
-#    adds cross-domain JS API exports to the chatapp account JWT
-#    that docker-local/setup.sh (single-site by default) does not
-#    declare. Idempotent; re-running on an already-extended trust
-#    chain is a no-op.
-#
-#    Background: ARCHITECTURE.md §0 "developer-audience setup-time
-#    prep" exception, finding F-001
-#    (docs/integration-suite-multisite-findings.md).
-make -C tools/integration-suite-multisite setup-jwt
 ```
 
 ---

@@ -52,12 +52,20 @@ func peerDomain(site string) string {
 	return "site-a"
 }
 
-// Apply creates JetStream Sources on each target INBOX. Takes a map of
-// site → admin conn (one per site) — the JS API isn't carried across the
-// supercluster gateway in our trust-chain config, so each spec is
-// applied via the conn that's local to its target site. The Source's
-// Domain = peer site lives in the stream config; NATS dials the peer
-// through the gateway at message-fetch time, which DOES traverse.
+// Apply creates JetStream Sources on each target INBOX. Each Source
+// also carries a SubjectTransform that rewrites the inbound subject
+// from `outbox.{peer}.to.{site}.>` to `chat.inbox.{site}.aggregate.>`
+// before the message lands in the destination stream. The transform
+// matches the chat-app's documented INBOX schema (see pkg/stream.Inbox
+// docstring) — the `chat.inbox.{site}.aggregate.>` subject pattern
+// only exists because federated events arrive under it. Without the
+// transform the source-delivered subject stays as outbox.* and the
+// inbox-worker consumer (bound to chat.inbox.{site}.aggregate.>) never
+// sees the message.
+//
+// Each spec is applied via the admin conn that's local to its target
+// site. The leafnode transport between sites carries the $JS API for
+// Source pulls plus the inbound message traffic itself.
 func Apply(ctx context.Context, specs []SourceSpec, adminBySite map[string]*nats.Conn) error {
 	for _, s := range specs {
 		admin, ok := adminBySite[s.On]
@@ -74,6 +82,10 @@ func Apply(ctx context.Context, specs []SourceSpec, adminBySite map[string]*nats
 				Name:          s.FromStream,
 				FilterSubject: s.Filter,
 				Domain:        peerDomain(s.On),
+				SubjectTransforms: []jetstream.SubjectTransformConfig{{
+					Source:      s.Filter,
+					Destination: fmt.Sprintf("chat.inbox.%s.aggregate.>", s.On),
+				}},
 			}},
 		})
 		if err != nil {

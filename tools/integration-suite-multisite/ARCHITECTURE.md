@@ -96,49 +96,6 @@ When the failure points at a gap outside the tool's scope, the tool's
 job is done: the system's verbatim error is the finding. What to do
 about it lives wherever ops decisions live, not here.
 
-### One exception — developer-audience setup-time prep
-
-This tool is for chat-app **developers**, not SRE or platform teams.
-The audience constraint creates one narrow exception to the
-"tool doesn't fill ops/infra gaps" rule.
-
-When all four of these criteria hold, the tool may ship a
-setup-time mutator that prepares the test environment for a class
-of tests that would otherwise be unreachable from the developer's
-seat:
-
-1. **Fix is unambiguously infra/SRE work**, not chat-app code.
-   No chat-app developer could ship it as their own PR even with
-   operator-level access (operator-key custody is a separate role).
-
-2. **Gap is pre-boot**, not per-run. Runtime mechanisms
-   (`pre_fire_scripts`, retries, alternate verbs) cannot reach it.
-   This must be demonstrated empirically — not assumed.
-
-3. **Gap blocks the developer's ability to verify the code they
-   are writing**. Not "would be nice to test"; "the developer's
-   own work cannot be confirmed without this."
-
-4. **Fix-locus has no alternative home within the developer's PR
-   cycle.** Filing a chat-app PR for `docker-local/setup.sh` and
-   waiting for it to merge is not in the developer's iteration
-   loop.
-
-When all four hold, the tool ships a setup-time script the operator
-runs once per machine (parallel to `make build-test-images`), with
-a clear deprecation note pointing at the eventual home of the fix.
-
-Currently exercised by exactly one case:
-
-| Case | Script | Eventually moves to |
-|------|--------|--------------------|
-| Operator JWT lacks `$JS.<peer>.API.>` exports for cross-domain JetStream Sources (finding F-001) | `setup-jwt-supercluster.sh` + `make setup-jwt` target | `docker-local/setup.sh` once the chat-app project grows multi-site support |
-
-The exception is named explicitly so any future "just one more"
-proposal has to argue against these four criteria, not against a
-vague principle. A new case enters this list only via the same
-four-criteria check.
-
 ### Infra-sanity scenarios — the harness's own health check
 
 Scenarios named `infra-sanity-*` (`status: approved`) verify the
@@ -206,9 +163,9 @@ the implementation must respect.
   ┌─────────────────────────────────────────────────────────────────┐
   │  Docker network: chat-local-multisite                           │
   │                                                                 │
-  │  ┌─────────────┐   gateway   ┌─────────────┐                   │
-  │  │ nats-site-a │◄───────────►│ nats-site-b │                   │
-  │  │  4222/7222  │             │  4222/7222  │                   │
+  │  ┌─────────────┐  leafnode   ┌─────────────┐                   │
+  │  │ nats-site-a │◄────────────│ nats-site-b │                   │
+  │  │  4222/7422  │             │  4222       │                   │
   │  └──────┬──────┘             └──────┬──────┘                   │
   │         │ JetStream domain=site-a   │ JetStream domain=site-b  │
   │                                                                 │
@@ -252,23 +209,34 @@ the implementation must respect.
 
 ---
 
-## 1. NATS supercluster and JetStream domains
+## 1. NATS cross-site transport and JetStream domains
 
-Each site runs its own NATS server. The two servers form a **NATS
-supercluster** via the gateway protocol: each server's `gateway:`
-block names the other server as a remote gateway. Both servers also
-have `jetstream:` enabled, with a distinct `domain` per site
-(`site-a` / `site-b`).
+Each site runs its own NATS server with `jetstream:` enabled and a
+distinct `domain` per site (`site-a` / `site-b`). The two servers
+are joined by a **leafnode link** rather than a supercluster
+gateway:
 
-Running `gateway:` and `jetstream:` together puts NATS into
-supercluster-JetStream mode, which requires `$SYS` to have an
-in-cluster transport. The gateway conf includes a **self-route** in
-the `cluster:` block — a route pointing at the server's own hostname.
-Without this, JetStream asset coordination fails during startup.
+- site-a hosts a leafnode listener on `:7422`.
+- site-b's `remotes:` block dials `nats-leaf://nats-site-a:7422`
+  using `backend.creds` (the same chatapp account user that every
+  service authenticates as).
+
+Leafnodes are the chosen transport because supercluster gateways do
+not carry the `$JS.<peer>.API.*` subjects required by JetStream
+Sources to pull from a remote domain (see
+`docs/integration-suite-multisite-findings.md` F-001 for the
+empirical proof). Leafnodes expose the full account subject space —
+including `$JS.<domain>.API.*` — across the link, which is exactly
+what cross-domain Sources need.
+
+Each server's conf also includes a **self-route** in the `cluster:`
+block — a route pointing at the server's own hostname. JetStream
+asset coordination requires an in-cluster transport even on a
+single-server cluster.
 
 The runner dials each site's NATS directly (not via Toxiproxy) using
-the `WithDomain(siteID)` JetStream option so that stream operations and
-consumers are anchored to the correct JetStream domain.
+the `WithDomain(siteID)` JetStream option so that stream operations
+and consumers are anchored to the correct JetStream domain.
 
 ---
 
@@ -282,13 +250,24 @@ After the 18 service containers are healthy, the runner:
 2. Reads `catalogs/federation.yaml`, which declares which streams
    source from which remote streams.
 3. Applies `UpdateStream` on each INBOX to add a `Sources` entry
-   pointing at the remote OUTBOX:
-   - `INBOX_site-a.Sources` ← `OUTBOX_site-b` (via site-b's JS domain)
-   - `INBOX_site-b.Sources` ← `OUTBOX_site-a` (via site-a's JS domain)
+   pointing at the remote OUTBOX, **with a `SubjectTransform`** that
+   rewrites the inbound subject to match the INBOX schema:
+   - `INBOX_site-a.Sources` ← `OUTBOX_site-b`, transform
+     `outbox.site-b.to.site-a.>` → `chat.inbox.site-a.aggregate.>`
+   - `INBOX_site-b.Sources` ← `OUTBOX_site-a`, transform
+     `outbox.site-a.to.site-b.>` → `chat.inbox.site-b.aggregate.>`
+
+The SubjectTransform is required because `inbox-worker`'s consumer
+binds to `chat.inbox.{site}.aggregate.>`, not to the raw `outbox.>`
+subject. The chat-app design owns this rewrite at the federation
+layer — see `pkg/stream/stream.go` `Inbox()` docstring lines 64-69.
+The test tool mirrors that production federation shape; it does not
+invent it.
 
 This gives the standard Outbox/Inbox cross-site event path. Services
 publish to their local OUTBOX; the federation source pulls those
-events into the remote INBOX; remote `inbox-worker` processes them.
+events into the remote INBOX (rewriting the subject on the way in);
+remote `inbox-worker` processes them.
 
 ---
 

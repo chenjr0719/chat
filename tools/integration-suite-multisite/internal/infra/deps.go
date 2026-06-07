@@ -13,20 +13,23 @@ import (
 )
 
 // startNATS launches a NATS container with the operator-signed trust
-// chain from docker-local/nats.conf plus a per-site gateway config
-// file that enables NATS supercluster mode (JetStream domain + gateway
-// port). The site parameter ("site-a" or "site-b") selects the gateway
-// config file and determines the container's DNS alias on the shared
-// network (nats-site-a / nats-site-b). Both aliases are used by
-// Toxiproxy's NATSProxy-<site> entries and by the cross-site gateway
-// stanzas in the conf files.
+// chain from docker-local/nats.conf plus a per-site topology config
+// file that enables JetStream (with a per-site domain) and leafnode
+// transport. The site parameter ("site-a" or "site-b") selects the
+// topology config file and determines the container's DNS alias on
+// the shared network (nats-site-a / nats-site-b). Both aliases are
+// used by Toxiproxy's NATSProxy-<site> entries and by the leafnode
+// remote URL in site-b's topology conf.
+//
+// backend.creds is mounted alongside the configs so site-b's leafnode
+// remote can authenticate into site-a's chatapp account at dial time.
 func startNATS(ctx context.Context, networkName, repoRoot, site string) (testcontainers.Container, string, error) {
-	gatewayConfFile := filepath.Join(repoRoot, "tools", "integration-suite-multisite", "internal", "infra", "nats.gateway."+site+".conf")
+	topologyConfFile := filepath.Join(repoRoot, "tools", "integration-suite-multisite", "internal", "infra", "nats.gateway."+site+".conf")
 	req := testcontainers.ContainerRequest{
 		Image:        testimages.NATS,
-		ExposedPorts: []string{"4222/tcp", "8222/tcp", "7222/tcp"},
+		ExposedPorts: []string{"4222/tcp", "8222/tcp", "7422/tcp"},
 		// Load both the operator trust-chain config and the per-site
-		// gateway/JetStream config. nats-server merges multiple -c files.
+		// topology config. nats-server merges multiple -c files.
 		Cmd:      []string{"-c", "/etc/nats/nats.conf", "-c", "/etc/nats/gateway.conf"},
 		Networks: []string{networkName},
 		NetworkAliases: map[string][]string{
@@ -39,8 +42,13 @@ func startNATS(ctx context.Context, networkName, repoRoot, site string) (testcon
 				FileMode:          0o400,
 			},
 			{
-				HostFilePath:      gatewayConfFile,
+				HostFilePath:      topologyConfFile,
 				ContainerFilePath: "/etc/nats/gateway.conf",
+				FileMode:          0o400,
+			},
+			{
+				HostFilePath:      filepath.Join(repoRoot, "docker-local", "backend.creds"),
+				ContainerFilePath: "/etc/nats/backend.creds",
 				FileMode:          0o400,
 			},
 		},

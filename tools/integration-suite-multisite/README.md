@@ -1,7 +1,7 @@
 # integration-suite-multisite
 
 A scenario-driven black-box integration test platform for the chat
-backend running across a two-site NATS supercluster federation. Each
+backend running across a two-site NATS JetStream federation. Each
 scenario YAML declares per-site seed data, a single verb fire, and an
 ordered list of assertions. A **Sandbox** materializes the seed on each
 site and asserts outcomes via Gomega streaming matchers against six
@@ -106,17 +106,18 @@ for post-mortem inspection.
 
 **Two infra unit tests are skipped.** `TestStartNATS_ReachableOnHostPort`
 and `TestStartToxiproxy_AdminReachableAndProxiesProvisioned` are
-`t.Skip`-ped in the Go test suite. The gateway conf only mounts
-correctly with the full repo layout, and the proxy-name assertions
-cover old single-site names. Both paths are verified by the smoke run.
+`t.Skip`-ped in the Go test suite. The per-site NATS topology conf
+only mounts correctly with the full repo layout, and the proxy-name
+assertions cover old single-site names. Both paths are verified by
+the smoke run.
 
 ---
 
 ## Further reading
 
-- `ARCHITECTURE.md` — the 26-container stack, NATS supercluster,
-  federation sources, Sandbox lifecycle, and the verb/reader primitive
-  catalog.
+- `ARCHITECTURE.md` — the 26-container stack, cross-site NATS
+  transport, federation sources, Sandbox lifecycle, and the
+  verb/reader primitive catalog.
 - `AUTHORING.md` — how to write a scenario in the multi-site shape.
 - `SCENARIO-REFERENCE.md` — strict YAML field-by-field grammar.
 - `RUNBOOK.md` — prerequisites, build, run, teardown, gotchas.

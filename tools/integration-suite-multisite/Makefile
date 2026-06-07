@@ -4,7 +4,7 @@ REPORT_PATH := $(REPO_ROOT)/docs/integration-suite-multisite/last-run.md
 
 NATS_CONTAINER := chat-local-nats
 
-.PHONY: help validate local run preflight preflight-containers merge-performance setup-jwt
+.PHONY: help validate local run preflight preflight-containers merge-performance
 
 help:
 	@echo "make -C tools/integration-suite-multisite <target>"
@@ -13,15 +13,9 @@ help:
 	@echo "  USE_INFRA=true make local         — boot the full stack programmatically"
 	@echo "  run                               — alias for local"
 	@echo "  INTERACTIVE=true make run         — open the stdin-driven scenario menu (Phase 4.6)"
-	@echo "  setup-jwt                         — once-per-machine prep for multi-site federation tests"
-	@echo "                                       (see ARCHITECTURE.md §0 + F-001 — extends docker-local"
-	@echo "                                        trust chain with cross-domain JS API exports)"
 
 validate:
 	@cd $(TOOL_DIR) && go run ./cmd/validator
-
-setup-jwt:
-	@$(TOOL_DIR)/setup-jwt-supercluster.sh
 
 # Conditional preflight dependencies. The default `local` target assumes
 # the docker-local stack is up on the host's fixed ports (8080, 4222,
