@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/testcontainers/testcontainers-go"
 	"golang.org/x/sync/errgroup"
 )
@@ -222,6 +223,20 @@ func Up(ctx context.Context, cfg *Config) (*Stack, error) {
 		return g2.Wait()
 	}
 
+	// Step 5.5: wait for each site's JetStream to be ready to accept
+	// stream operations. NATS prints "Server is ready" before the
+	// leafnode handshake settles, and during that window JS replies
+	// with 503 "JetStream system temporarily unavailable" to any
+	// stream-create call that touches cross-domain routing. Phase A
+	// services bootstrap streams (BOOTSTRAP_STREAMS=true in dev) and
+	// would otherwise race that window — observed deterministically in
+	// Run 59. Polling AccountInfo until it stops returning 503 is the
+	// cheapest correct signal.
+	if err := waitForJetStreamReady(ctx, s.deps.natsURLBySite, repoRoot); err != nil {
+		s.TerminateAll(context.Background())
+		return nil, fmt.Errorf("infra.Up: wait JS ready: %w", err)
+	}
+
 	// Phase A — stream owners with cross-service consumers downstream.
 	// room-worker creates ROOMS_<site>; notification-worker depends on it.
 	phaseA := []string{"room-worker"}
@@ -299,6 +314,47 @@ func closeAdmins(admins map[string]*nats.Conn) {
 	for _, c := range admins {
 		_ = c.Drain()
 	}
+}
+
+// waitForJetStreamReady polls each site's JetStream AccountInfo until
+// it returns a non-503 reply. NATS prints "Server is ready" before the
+// leafnode handshake completes; during that window JS replies 503
+// "JetStream system temporarily unavailable" to stream operations
+// involving cross-domain routing. Any service that bootstraps a stream
+// via BOOTSTRAP_STREAMS=true races this window and exits 1 if it
+// loses. Polling AccountInfo is the cheapest correct readiness signal —
+// it exercises the same $JS API path the bootstrap call uses and
+// surfaces the same 503 when not-ready.
+func waitForJetStreamReady(ctx context.Context, natsURLBySite map[string]string, repoRoot string) error {
+	admins, err := openSiteAdmins(natsURLBySite, repoRoot)
+	if err != nil {
+		return fmt.Errorf("js ready: %w", err)
+	}
+	defer closeAdmins(admins)
+
+	waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	for _, site := range []string{"site-a", "site-b"} {
+		slog.Info("integration-suite: waiting for JetStream ready", "site", site)
+		js, jerr := jetstream.NewWithDomain(admins[site], site)
+		if jerr != nil {
+			return fmt.Errorf("js ready: js context for %s: %w", site, jerr)
+		}
+		for {
+			_, aerr := js.AccountInfo(waitCtx)
+			if aerr == nil {
+				slog.Info("integration-suite: JetStream ready", "site", site)
+				break
+			}
+			select {
+			case <-waitCtx.Done():
+				return fmt.Errorf("js ready: %s not ready within timeout: %w", site, aerr)
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
+	return nil
 }
 
 // waitForRoomsStreams polls until ROOMS_site-a and ROOMS_site-b exist

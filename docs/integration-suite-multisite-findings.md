@@ -168,6 +168,46 @@ These changes are infra-layer — the scenario YAML grammar, reader
 and verb primitives, sandbox model, and runner flow are
 **unchanged**.
 
+### Follow-up — Run 59: leafnode handshake init race
+
+The leafnode topology landed conceptually correct, but the suite
+never reached scenarios:
+
+```
+   panic: infra.Up: services (phase A): start room-worker-site-b:
+          container exited with code 1
+
+   room-worker-{site-a,site-b}, same wall-clock second:
+     INFO  connected to MongoDB
+     ERROR bootstrap streams failed
+           error="create ROOMS stream: nats: API error: code=503
+                  err_code=10008 description=JetStream system
+                  temporarily unavailable"
+     → exits 1
+```
+
+NATS prints `Server is ready` BEFORE the leafnode handshake
+completes. During that window, JetStream replies 503
+`temporarily unavailable` to stream operations that touch
+cross-domain routing. The testcontainers wait strategy in
+`deps.go` keyed off `Server is ready`, so Phase A services
+(`room-worker × 2`, which set `BOOTSTRAP_STREAMS=true` in dev)
+booted into that window and exited 1 deterministically.
+
+**Fix in the test tool (this commit):**
+`internal/infra/stack.go` now runs `waitForJetStreamReady`
+between deps boot (Step 3) and Phase A service start. It opens a
+per-site credentialed admin conn and polls `js.AccountInfo` on
+each site's local domain until the call stops returning 503,
+bounded by a 15s timeout. Same conn pattern as
+`waitForRoomsStreams`, just earlier in the lifecycle and checking
+503-vs-not-503 rather than stream-exists.
+
+This is tool-soundness territory — sequencing of the boot phases.
+Any future scenario that fires a service with
+`BOOTSTRAP_STREAMS=true` against the leafnode-connected stack
+would have hit the same race; the wait unblocks all of them.
+
 ### Where the chat-app team picks up
 
 This finding is a report on what the test tool needed to mirror
