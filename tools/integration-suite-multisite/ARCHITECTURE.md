@@ -229,15 +229,13 @@ empirical proof). Leafnodes expose the full account subject space —
 including `$JS.<domain>.API.*` — across the link, which is exactly
 what cross-domain Sources need.
 
-Each server runs a **single-node JetStream cluster** — `cluster:`
-block of size 1, no routes. The cluster block activates the JS
-meta-leader role, which is what propagates cross-domain interest
-in `$JS.<peer>.API.>` over the leafnode link (without it, source-
-fetcher CONSUMER.CREATE returns 10059 even though client probes
-across the same leaf succeed — see F-001 Run 68). The earlier
-self-route (Runs 60-61) caused election to hang waiting for a peer
-that never came; removing the route means quorum = 1 and the lone
-node elects itself instantly.
+Each server runs **standalone JetStream** — no `cluster:` block.
+This boots cleanly and lets Surfaces 1-4 of cross-site scenarios
+pass, but Surface 5 (federated delivery into peer INBOX) is
+blocked by a NATS topology question the test tool can't answer
+unilaterally. F-001 documents the empirically-explored design
+space (no cluster / cluster-with-self-route / cluster-without-
+routes) and the open question for the chat-app team's SRE input.
 
 The runner dials each site's NATS directly (not via Toxiproxy) using
 the `WithDomain(siteID)` JetStream option so that stream operations

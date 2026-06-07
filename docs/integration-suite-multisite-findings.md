@@ -297,7 +297,14 @@ now both filters (NATS only pulls matching subjects) and rewrites.
 Same Source/Destination pair as before; one duplicate filter
 removed.
 
-### Follow-up — Run 68: Source 10059 with standalone JS
+### Follow-up — Runs 68-70: Source 10059, design space exhausted
+
+After every fix landed cleanly through Run 67, Surface 5 still
+showed `state.sources[0].active = -1ns` and INBOX_site-b.msgs = 0.
+The next two runs explored the remaining NATS-topology design
+space; the matrix is now exhausted within the test tool's scope.
+
+#### Run 68 — standalone JS, Source returns 10059
 
 The 10137 cleared. Source state on INBOX_site-b shows the config
 landed correctly:
@@ -349,21 +356,87 @@ which made NATS wait for a peer that never came. A cluster block
 of size 1 with NO routes elects itself instantly (quorum = 1,
 votes = 1), giving meta-leader activation without hang.
 
-**Experiment in this commit:**
-Re-added `cluster: { name: site-X; listen: 0.0.0.0:6222 }` to both
-`internal/infra/nats.gateway.site-{a,b}.conf` — single-node
-cluster, no routes. Hypothesis: meta-leader elects immediately,
-cross-domain JS interest propagates over the leaf, source-fetcher
-CONSUMER.CREATE succeeds, INBOX_site-b receives federated events.
+#### Run 70 — single-node cluster, no routes → boot FTL
 
-If this experiment fails the same way, the gap is genuinely a
-NATS-server-internal cross-domain Source mechanism that single-
-account leafnodes don't bridge — at which point the chat-app
-team's SRE input is required (likely: bridge `$SYS` via a separate
-leafnode connection, or switch production topology to hub-and-
-spoke with one site as the JS-meta hub).
+Hypothesis for Run 68 was that standalone JS skips JS meta-leader
+activation and the meta-leader is what propagates cross-domain
+interest over the leaf. Tried: re-add `cluster:` block, size 1,
+no routes. Both NATS containers refused to start:
 
-### Adjacent fix in this commit — Surface 5 subject
+```
+   [INF] Starting JetStream cluster
+   [FTL] Can't start JetStream:
+         JetStream cluster requires configured routes or solicited
+         leafnode for the system account
+```
+
+NATS in cluster mode requires `$SYS` routing via EITHER configured
+`routes:` OR a solicited leafnode connection that serves the
+system account. The hub side has no leafnode remote at all. The
+spoke side has a remote, but it solicits for the **chatapp**
+account (via `backend.creds`), not the system account. Neither
+side satisfies the check, both FTL at boot.
+
+#### Design-space matrix (empirically exhausted)
+
+| Topology                              | Boots | Sources deliver |
+|---------------------------------------|-------|------------------|
+| no `cluster:` block                   | yes   | no — Source returns 10059, server-internal path can't reach peer $JS API |
+| `cluster:` with `routes:` self-route  | yes   | no — meta-leader election hangs forever waiting for the "peer" that's itself |
+| `cluster:` with no routes             | no    | n/a — FTL on boot, no $SYS leaf for cluster mode |
+
+All three states have been verified empirically across Runs 60-70.
+Two boot, neither delivers. None of the three permit Surface 5 to
+exercise on the test tool's own configuration alone.
+
+#### What the test tool has done (this commit)
+
+Reverted to the boot-clean state (no `cluster:` block on either
+side). Surfaces 1-4 continue to pass cleanly. Surface 5 remains a
+known gap and the scenario YAML's Surface 5 assertion stays in
+place as the failure marker.
+
+The test tool stops iterating on this. Further movement requires
+chat-app-side input on production topology.
+
+#### Where the chat-app team picks up (concrete options)
+
+Three directions surfaced through the iteration. The chat-app
+team picks whichever matches the production federation plan:
+
+1. **Bridge `$SYS` across the leaf via a second leafnode
+   connection.** The spoke (site-b) adds a second `remotes:`
+   entry authenticating with system-account credentials, giving
+   the cluster-mode startup the "solicited leafnode for the
+   system account" it needs. Requires generating a system-account
+   user via `nsc` in `docker-local/setup.sh` (currently only the
+   chatapp `backend` user is generated). This is the path that
+   most closely matches a production NATS leafnode-with-JS
+   topology.
+
+2. **Hub-and-spoke with one site as the JS-meta hub.** Promote
+   one site (say site-a) to a clustered JS hub with explicit
+   `routes:` pointing at a second hub-cluster member (a third
+   NATS container dedicated to forming a 2-node cluster with
+   site-a). The spoke (site-b) stays single-node. JetStream
+   cross-domain Sources from a clustered hub to a single-node
+   leaf is the documented NATS pattern. Significantly more
+   container budget (a 27th container) but matches NATS docs
+   exactly.
+
+3. **Single NATS, two JS domains.** Drop the per-site NATS
+   containers; one NATS server hosts both `site-a` and `site-b`
+   as separate JetStream domains on the same server. Eliminates
+   the cross-cluster question entirely. Loses the cross-cluster
+   test surface (so e.g. network partitions between sites are
+   no longer expressible), but Surfaces 1-5 all become testable.
+
+The chat-app team's production federation plan decides which.
+Until then, this finding stays at `observed`, the test tool ships
+the boot-clean two-site stack, and scenarios assert Surfaces 1-4
+cleanly.
+
+### Adjacent fix retained — Surface 5 subject
 
 The scenario `cross-site-room-rename-federation.yaml` Surface 5
 was filtering on the pre-transform subject
@@ -373,9 +446,21 @@ SubjectTransform writes the message into INBOX_site-b as
 would never match — even if the Source delivered cleanly. The
 Surface 5 assertion has been corrected to filter on the
 post-transform subject, matching what inbox-worker's consumer
-actually binds to.
+actually binds to. This stays in place across the revert; it's
+correct in any of the three resolution paths above.
 
-### Where the chat-app team picks up
+### Where the chat-app team picks up (summary)
+
+The full picks-up list is enumerated in "Concrete options" under
+"Runs 68-70" above. The short version:
+
+1. Decide which production topology direction the chat-app team
+   commits to (single-leaf with `$SYS` bridge, hub-and-spoke
+   with a 2-node JS hub, or single-NATS-with-multiple-domains).
+2. Update `docker-local/setup.sh` (or sibling) and the test
+   tool's `internal/infra/nats.gateway.*.conf` to match.
+3. When Surface 5 delivers end-to-end against the new topology,
+   this finding flips to `resolved`.
 
 This finding is a report on what the test tool needed to mirror
 production federation in local-dev. The chat-app team owns the
