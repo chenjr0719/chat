@@ -134,6 +134,19 @@ func runScenario(ctx context.Context, s *scenario.Scenario, deps *runnerDeps) er
 
 	start := time.Now()
 
+	// Pre-fire scripts: author-declared hooks that run after Sandbox
+	// setup completes and before any poller warming or the fire. The
+	// harness executes whatever the scenario YAML declares; the
+	// script's content and intent are the author's, not the tool's.
+	// Non-zero exit fails the scenario with the script's output
+	// captured into the report.
+	if err := runPreFireScripts(ctx, s, deps.Cfg); err != nil {
+		recordScenario(deps.Perf, deps.Report, s,
+			scenarioVerdict{Outcome: "fail", Reason: err.Error()},
+			time.Since(start))
+		return nil
+	}
+
 	// Build the substitution context.
 	subCtx := buildSubContext(sb)
 

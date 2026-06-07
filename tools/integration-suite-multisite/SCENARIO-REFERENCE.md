@@ -50,6 +50,7 @@ Every field the loader recognizes:
 | `tag` | string | yes | — | `positive` or `negative`. Drives the confusion matrix. |
 | `sites` | map | yes | — | Map of `site-a`/`site-b` → site spec. At least one site required. |
 | `cassandra_data` | list | no | — | Top-level Cassandra seed rows. Cassandra is shared; do not put this under `sites`. |
+| `pre_fire_scripts` | list of strings | no | — | Author-owned scripts that run after `Sandbox.Setup` and before `Dispatcher.Fire`. See §4.5. |
 | `input` | object | yes | — | The single verb fire. |
 | `expected` | list | yes | — | Non-empty list of assertions. |
 
@@ -185,6 +186,99 @@ a shared single-cluster deployment.
   from the resolved value of the named column (`created_at` in the
   example). Uses the same `MESSAGE_BUCKET_HOURS` window the services
   use.
+
+---
+
+## 4.5 `pre_fire_scripts` — author-owned setup hooks
+
+Some scenarios need pre-conditions that the seed grammar cannot
+express — typically operationally-scaffolded state that lives outside
+any service's bootstrap responsibility (per `ARCHITECTURE.md` §0,
+"the tool's limits"). The `pre_fire_scripts` field lets the author
+declare a list of executable scripts that the harness runs **after
+`Sandbox.Setup` completes and before `Dispatcher.Fire`**.
+
+```yaml
+pre_fire_scripts:
+  - prep-outbox-streams.sh
+  - prep-vault-secret.sh
+```
+
+The grammar is intentionally minimal — a list of relative paths
+(strings only; no `args:`, no nested config). Each script is the
+author's bespoke tool for one job; if it needs values, it reads
+env vars or just hard-codes.
+
+| Property | Rule |
+|----------|------|
+| Path | Relative to the directory of the scenario YAML file. |
+| Working directory | The directory of the scenario YAML file. |
+| Execution order | List order. Single-threaded; the next script does not start until the previous one exits 0. |
+| Exit code | Non-zero fails the scenario; remaining scripts do not run. |
+| Failure reason | `pre_fire_scripts[i] "name.sh": exit status N; output: <stderr/stdout snippet, truncated at 4 KB>`. Surfaces in `last-run.md`. |
+| Permissions | Script must be executable (`chmod +x`). The harness exec's it directly — shebang line picks the interpreter. |
+
+### Environment variables exposed to the script
+
+```
+   ISM_SITE_A_NATS_URL      host-mapped NATS URL for site-a
+   ISM_SITE_B_NATS_URL      host-mapped NATS URL for site-b
+   ISM_NATS_CREDS_FILE      absolute path to backend.creds
+   ISM_SITE_A_MONGO_URI     host-mapped Mongo URI for site-a
+   ISM_SITE_B_MONGO_URI     host-mapped Mongo URI for site-b
+   ISM_CASSANDRA_HOSTS      shared Cassandra host:port (single)
+   ISM_RUN_ID               sandbox run identifier
+   ISM_SCENARIO_NAME        the `scenario:` field of this YAML
+```
+
+The script also inherits the caller's `PATH`, `HOME`, and other
+environment so CLI tools (`nats`, `mongosh`, `cqlsh`, etc.) the
+operator already installed are discoverable.
+
+### Worked example — pre-creating `OUTBOX_<site>`
+
+`OUTBOX_<site>` is owned by ops/IaC in production and is not
+bootstrapped by any chat service. If a scenario fires production code
+that publishes to `outbox.<site>.>`, the publish returns `nats: no
+response from stream`. That's a real finding; the harness will not
+auto-fill the gap (per the limits doc). A scenario that wants to
+test downstream effects past the gap can declare the prep as a
+script the operator's own infrastructure runs.
+
+```yaml
+pre_fire_scripts:
+  - prep-outbox-streams.sh
+```
+
+```sh
+# prep-outbox-streams.sh
+#!/usr/bin/env bash
+set -euo pipefail
+for site in site-a site-b; do
+  url_var="ISM_$(echo "$site" | tr 'a-z-' 'A-Z_')_NATS_URL"
+  nats stream add "OUTBOX_$site" \
+       --subjects "outbox.$site.>" \
+       --server "${!url_var}" \
+       --creds "$ISM_NATS_CREDS_FILE" \
+       --defaults --no-progress
+done
+```
+
+The script is the author's responsibility — its content, its
+runtime dependencies, its cleanup, its idempotency. The harness's
+role is purely to execute it and surface the result.
+
+### What `pre_fire_scripts` is NOT
+
+- Not a fallback for missing scenario state. Anything the seed grammar
+  CAN express (users, rooms, memberships, remote_users, cassandra_data)
+  belongs in the seed block — author-visible, declarative, no
+  external dependency.
+- Not a place to invoke production code on the author's behalf — if
+  the scenario wants the app to do something, that's `input:`, not
+  `pre_fire_scripts:`.
+- Not a workaround for harness bugs — if a scenario shouldn't need
+  a script, fix the harness or the scenario, not patch around it.
 
 ---
 

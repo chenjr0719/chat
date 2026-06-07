@@ -123,6 +123,33 @@ message-bucket partition key from the resolved `created_at` column.
 
 ---
 
+## `pre_fire_scripts:` — escape hatch for state the seed grammar can't express
+
+Some pre-conditions are operationally-scaffolded (a JetStream stream
+ops/IaC normally creates, a Vault secret a sidecar normally provides).
+The seed grammar declares scenario state, not infra state — see
+`ARCHITECTURE.md` §0 for why.
+
+If your scenario needs that kind of prep, declare it as a script:
+
+```yaml
+pre_fire_scripts:
+  - prep-outbox.sh
+```
+
+The script sits next to the YAML file. The harness runs it after
+`Sandbox.Setup` and before the fire, passing the live stack's
+host-mapped URLs + creds path as `ISM_*` env vars. Non-zero exit
+fails the scenario with the script's output captured into the
+report. Full reference: `SCENARIO-REFERENCE.md` §4.5.
+
+This is an escape hatch, not a default. Anything the seed grammar
+can express belongs in `seed:` — declarative, author-visible, no
+external dependency. Reach for `pre_fire_scripts` only when there's
+genuinely no seed-grammar way to set up the precondition.
+
+---
+
 ## Substitution token vocabulary
 
 Available in `subject`, `payload`, `credential`, `match`, and `args`

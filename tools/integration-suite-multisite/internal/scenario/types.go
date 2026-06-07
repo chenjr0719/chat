@@ -11,14 +11,21 @@ import (
 // No cases, no base_input/case.input distinction. Variants are
 // separate scenario files.
 type Scenario struct {
-	Name          string               `yaml:"scenario"`
-	Source        string               `yaml:"source"`
-	Status        string               `yaml:"status,omitempty"`
-	Tag           string               `yaml:"tag"` // "positive" | "negative"
-	Sites         map[string]SiteBlock `yaml:"sites"`
-	CassandraData []SeedCassandraTable `yaml:"cassandra_data,omitempty"`
-	Input         Input                `yaml:"input"`
-	Expected      []Expected           `yaml:"expected"`
+	Name           string               `yaml:"scenario"`
+	Source         string               `yaml:"source"`
+	Status         string               `yaml:"status,omitempty"`
+	Tag            string               `yaml:"tag"` // "positive" | "negative"
+	Sites          map[string]SiteBlock `yaml:"sites"`
+	CassandraData  []SeedCassandraTable `yaml:"cassandra_data,omitempty"`
+	PreFireScripts []string             `yaml:"pre_fire_scripts,omitempty"`
+	Input          Input                `yaml:"input"`
+	Expected       []Expected           `yaml:"expected"`
+
+	// SourcePath is the absolute path of the YAML file this Scenario
+	// was loaded from. Populated by LoadFile; not in the YAML itself.
+	// Used by runScenario to resolve PreFireScripts paths relative to
+	// the scenario file and to set the script working directory.
+	SourcePath string `yaml:"-"`
 }
 
 // SiteBlock is the per-site seed data — exactly the single-site

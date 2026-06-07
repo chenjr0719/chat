@@ -62,6 +62,7 @@ func loadScenarioBody(path string, data []byte) (*Scenario, error) {
 		return nil, err
 	}
 
+	s.SourcePath = path
 	return &s, nil
 }
 
