@@ -158,6 +158,11 @@ expected:
   # proves it was applied. A regression that drops the Mongo update
   # while keeping the consume would pass Surfaces 1-5 and silently
   # ship broken — Surface 6 is what stops that.
+  #
+  # `createdAt: {$exists: false}` opts out of the mongo_find poller's
+  # default createdAt >= startTime auto-merge — subscriptions use
+  # joinedAt, not createdAt, so without the opt-out the filter
+  # matches zero docs (see pollers/mongo.go:buildMongoFilter).
   - location: mongo_find
     site: site-b
     args:
@@ -165,6 +170,7 @@ expected:
       filter:
         roomId: r-shared
         u.account: ${bob.account}
+        createdAt: { $exists: false }
     match:
       name: SharedChannelRenamed
       roomId: r-shared

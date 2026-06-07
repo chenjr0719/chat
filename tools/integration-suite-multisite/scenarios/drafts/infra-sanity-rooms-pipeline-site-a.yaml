@@ -71,8 +71,14 @@ expected:
   # handler.go: BulkCreateSubscriptions call). A regression where
   # room-worker writes the room but skips the bulk-create-subscriptions
   # step would pass the rooms assertion above and silently leave members
-  # unsubscribed. Asserting alice's subscription (rather than just the
-  # row count) lets us verify the room name mirror landed too.
+  # unsubscribed.
+  #
+  # The `createdAt: {$exists: false}` clause opts out of the
+  # mongo_find poller's default `createdAt >= startTime` auto-merge
+  # (see pollers/mongo.go:buildMongoFilter). The subscriptions
+  # collection uses `joinedAt`, not `createdAt`, so the default filter
+  # would match zero docs forever. Opt-out lets the explicit filter
+  # (name + u.account) drive the lookup.
   - location: mongo_find
     site: site-a
     args:
@@ -80,6 +86,7 @@ expected:
       filter:
         name: SanityRoomA
         u.account: ${alice.account}
+        createdAt: { $exists: false }
     match:
       name: SanityRoomA
       roomType: channel

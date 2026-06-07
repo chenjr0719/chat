@@ -52,29 +52,33 @@ func peerDomain(site string) string {
 	return "site-a"
 }
 
-// Apply creates JetStream Sources on each target INBOX. Each Source
-// carries a SubjectTransform that rewrites the inbound subject from
-// `outbox.{peer}.to.{site}.>` to `chat.inbox.{site}.aggregate.>`
-// before the message lands in the destination stream. The transform
-// matches the chat-app's documented INBOX schema (see pkg/stream.Inbox
-// docstring) — the `chat.inbox.{site}.aggregate.>` subject pattern
-// only exists because federated events arrive under it. Without the
-// transform the source-delivered subject stays as outbox.* and the
-// inbox-worker consumer (bound to chat.inbox.{site}.aggregate.>) never
-// sees the message.
+// Apply attaches federation Sources (with SubjectTransforms) to each
+// target INBOX. The transform rewrites the inbound subject from
+// `outbox.{peer}.to.{site}.>` to `chat.inbox.{site}.aggregate.>` so
+// federated events land under the consumer-bind namespace (see
+// pkg/stream.Inbox docstring).
+//
+// IMPORTANT — fetch-mutate-write, not blind UpdateStream. NATS
+// UpdateStream REPLACES the entire StreamConfig with what's posted;
+// any field omitted on the call (e.g. Subjects, Retention, MaxAge)
+// gets reset to its zero value. inbox-worker's bootstrapStreams sets
+// Name + Subjects = [chat.inbox.{site}.*, chat.inbox.{site}.aggregate.>]
+// so that same-site publishes (room-worker → chat.inbox.{site}.member_added)
+// have a stream to land on. A blind `UpdateStream{Name, Sources}` here
+// would wipe Subjects to [] and same-site publishes would silently
+// fail with "no response from stream" (observed in Runs 73-74). We
+// fetch the existing config, mutate only Sources, and write back.
 //
 // The transform's Source field doubles as the Source-consumer filter
-// — NATS only pulls messages matching it. We deliberately leave
-// StreamSource.FilterSubject empty: setting both FilterSubject AND a
-// SubjectTransform with the same pattern trips NATS error 10137
-// ("consumer with multiple subject filters cannot use subject based
-// API") on the cross-cluster Source consumer, because NATS counts the
-// two as separate subject filters on a single legacy-API consumer
-// (observed in Run 65).
+// — NATS only pulls matching subjects. StreamSource.FilterSubject is
+// deliberately empty: setting both FilterSubject AND a SubjectTransform
+// with the same pattern trips NATS error 10137 ("consumer with multiple
+// subject filters cannot use subject based API") on the cross-cluster
+// Source consumer (observed in Run 65).
 //
-// Each spec is applied via the admin conn that's local to its target
-// site. The leafnode transport between sites carries the $JS API for
-// Source pulls plus the inbound message traffic itself.
+// Each spec is applied via the admin conn local to its target site.
+// The leafnode transport between sites carries the $JS API for Source
+// pulls plus the inbound message traffic itself.
 func Apply(ctx context.Context, specs []SourceSpec, adminBySite map[string]*nats.Conn) error {
 	for _, s := range specs {
 		admin, ok := adminBySite[s.On]
@@ -85,18 +89,20 @@ func Apply(ctx context.Context, specs []SourceSpec, adminBySite map[string]*nats
 		if err != nil {
 			return fmt.Errorf("federation Apply: js context for %s: %w", s.On, err)
 		}
-		_, err = js.UpdateStream(ctx, jetstream.StreamConfig{
-			Name: s.Stream,
-			Sources: []*jetstream.StreamSource{{
-				Name:   s.FromStream,
-				Domain: peerDomain(s.On),
-				SubjectTransforms: []jetstream.SubjectTransformConfig{{
-					Source:      s.Filter,
-					Destination: fmt.Sprintf("chat.inbox.%s.aggregate.>", s.On),
-				}},
-			}},
-		})
+		existing, err := js.Stream(ctx, s.Stream)
 		if err != nil {
+			return fmt.Errorf("federation Apply: fetch %s on %s: %w", s.Stream, s.On, err)
+		}
+		cfg := existing.CachedInfo().Config
+		cfg.Sources = []*jetstream.StreamSource{{
+			Name:   s.FromStream,
+			Domain: peerDomain(s.On),
+			SubjectTransforms: []jetstream.SubjectTransformConfig{{
+				Source:      s.Filter,
+				Destination: fmt.Sprintf("chat.inbox.%s.aggregate.>", s.On),
+			}},
+		}}
+		if _, err := js.UpdateStream(ctx, cfg); err != nil {
 			return fmt.Errorf("federation Apply: UpdateStream %s on %s: %w", s.Stream, s.On, err)
 		}
 	}

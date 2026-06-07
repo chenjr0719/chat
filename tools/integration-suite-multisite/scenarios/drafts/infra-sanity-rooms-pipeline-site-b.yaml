@@ -59,7 +59,7 @@ expected:
 
   # Subscriptions row for bob (the creator) — mirrors site-a's surface 4.
   # See infra-sanity-rooms-pipeline-site-a.yaml for the regression
-  # rationale.
+  # rationale and the createdAt $exists opt-out rationale.
   - location: mongo_find
     site: site-b
     args:
@@ -67,6 +67,7 @@ expected:
       filter:
         name: SanityRoomB
         u.account: ${bob.account}
+        createdAt: { $exists: false }
     match:
       name: SanityRoomB
       roomType: channel
