@@ -96,6 +96,49 @@ When the failure points at a gap outside the tool's scope, the tool's
 job is done: the system's verbatim error is the finding. What to do
 about it lives wherever ops decisions live, not here.
 
+### One exception — developer-audience setup-time prep
+
+This tool is for chat-app **developers**, not SRE or platform teams.
+The audience constraint creates one narrow exception to the
+"tool doesn't fill ops/infra gaps" rule.
+
+When all four of these criteria hold, the tool may ship a
+setup-time mutator that prepares the test environment for a class
+of tests that would otherwise be unreachable from the developer's
+seat:
+
+1. **Fix is unambiguously infra/SRE work**, not chat-app code.
+   No chat-app developer could ship it as their own PR even with
+   operator-level access (operator-key custody is a separate role).
+
+2. **Gap is pre-boot**, not per-run. Runtime mechanisms
+   (`pre_fire_scripts`, retries, alternate verbs) cannot reach it.
+   This must be demonstrated empirically — not assumed.
+
+3. **Gap blocks the developer's ability to verify the code they
+   are writing**. Not "would be nice to test"; "the developer's
+   own work cannot be confirmed without this."
+
+4. **Fix-locus has no alternative home within the developer's PR
+   cycle.** Filing a chat-app PR for `docker-local/setup.sh` and
+   waiting for it to merge is not in the developer's iteration
+   loop.
+
+When all four hold, the tool ships a setup-time script the operator
+runs once per machine (parallel to `make build-test-images`), with
+a clear deprecation note pointing at the eventual home of the fix.
+
+Currently exercised by exactly one case:
+
+| Case | Script | Eventually moves to |
+|------|--------|--------------------|
+| Operator JWT lacks `$JS.<peer>.API.>` exports for cross-domain JetStream Sources (finding F-001) | `setup-jwt-supercluster.sh` + `make setup-jwt` target | `docker-local/setup.sh` once the chat-app project grows multi-site support |
+
+The exception is named explicitly so any future "just one more"
+proposal has to argue against these four criteria, not against a
+vague principle. A new case enters this list only via the same
+four-criteria check.
+
 ### Infra-sanity scenarios — the harness's own health check
 
 Scenarios named `infra-sanity-*` (`status: approved`) verify the

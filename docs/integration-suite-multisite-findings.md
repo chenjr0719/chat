@@ -34,7 +34,12 @@ Run 46.
 
 **Layer:** Ops / IaC. Not a tool bug, not a chat-app bug.
 
-**Status:** Open. Requires ops/IaC work outside this suite's scope.
+**Status:** Mitigation in progress (`setup-jwt-supercluster.sh`
+framework landed; nsc body pending empirical work). The fix's
+eventual home is the chat-app's `docker-local/setup.sh` —
+`setup-jwt-supercluster.sh` is the test-tool-side stop-gap allowed by
+`ARCHITECTURE.md` §0's "developer-audience setup-time prep" exception
+(the only exception named in the limits doc).
 
 ### Symptom
 
@@ -102,9 +107,53 @@ and does NOT provide a recovery procedure.
 
 ### What unblocks this
 
-When the JWT change ships, no scenario YAML and no harness code
-needs to change. The same federation scenario will reach Surface 5
-green on the next run.
+When the JWT change ships (either via `setup-jwt-supercluster.sh`
+once its nsc body is finalised, or via `docker-local/setup.sh` once
+the chat-app project grows multi-site support), no scenario YAML
+and no harness code needs to change. The same federation scenario
+will reach Surface 5 green on the next run.
+
+### Mitigation in this repo
+
+`tools/integration-suite-multisite/setup-jwt-supercluster.sh` is the
+test-tool-side mitigation. It is:
+
+- **Framework complete:** idempotency check (parses the chatapp
+  account JWT and looks for the required exports), pre-mutation
+  backup of `nats.conf` + `backend.creds` with timestamped suffix,
+  post-mutation re-verification with backup restoration on failure.
+- **nsc body pending:** the actual nsc invocations are marked with
+  a `TODO(suite-multisite)` block. The script fails loudly with a
+  pointer to this finding when run before the body is filled in —
+  intentional, because shipping a half-correct nsc mutation would
+  create a subtly broken trust chain that's worse than the clear
+  Surface 5 failure we currently report.
+
+Invocation: `make -C tools/integration-suite-multisite setup-jwt`.
+Once per machine. Re-running on an already-correct JWT is a no-op.
+
+### Why this exception is named explicitly in the limits doc
+
+`ARCHITECTURE.md` §0 lists exactly one exception to "the tool does
+not fill ops/infra gaps": developer-audience setup-time prep, with
+four criteria that all must hold. F-001 is the case the exception
+was written for; the criteria match exactly:
+
+1. Fix is unambiguously infra/SRE — operator-key custody is a
+   separate role from chat-app development.
+2. Gap is pre-boot — proven empirically (`pre_fire` cannot reach
+   the trust chain; NATS strips the Source.Domain field silently
+   because the JWT doesn't allow validation).
+3. Gap blocks developer verification — the federation code in
+   `room-worker` cannot be confirmed by tests without the fix.
+4. No alternative home in the developer's PR cycle — filing a
+   chat-app PR for `docker-local/setup.sh` is out of the
+   developer's iteration loop.
+
+The script's existence and the exception's existence are
+load-bearing on each other. If the chat-app project ships
+multi-site support in `docker-local/setup.sh`, both should be
+removed — the exception expires, the script becomes dead code.
 
 ### What scenarios will hit the same gap
 
