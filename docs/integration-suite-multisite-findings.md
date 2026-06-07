@@ -155,29 +155,77 @@ on the chatapp account. It is:
 - idempotent (no-op on already-extended trust chain)
 - self-backing-up (`nats.conf.bak-<timestamp>`,
   `backend.creds.bak-<timestamp>`)
-- self-verifying (restores backups if post-mutation check fails)
-- best-effort (the exact nsc export shape needed for NATS to retain
-  the `Source.Domain` field is the only piece that isn't proven;
-  the rest of the script is mechanical)
+- self-verifying (the JWT-mutation half — restores backups if the
+  export doesn't land in the JWT)
+- empirically validated only at the JWT-content level (see below)
 
-### Recommendation
+### Empirical result — Run 58: export is necessary but NOT sufficient
 
-1. Treat `setup-jwt-supercluster.sh` as a test-tool stop-gap that
-   exists because we can't ship updates to `docker-local/setup.sh`
-   without the chat-app project's review.
+After running `make setup-jwt` and restarting the stack, the
+federation Source state probe shows **no change**:
 
-2. Move the equivalent logic into `docker-local/setup.sh` (or a
-   sibling, like `docker-local/setup-multisite.sh`) at your project's
-   convenience. When you do, the test tool's script becomes dead
-   code — delete it and the `setup-jwt` make target, and remove the
-   "developer-audience setup-time prep" exception from the test
-   tool's `ARCHITECTURE.md` §0.
+```
+                       before make setup-jwt    after make setup-jwt
+   ─────────────────   ──────────────────────   ──────────────────────
+   cfg.sources[0].domain     ""                       ""
+   state.sources[0].active  -1ns                     -1ns
+   INBOX_site-b msgs         0                        0
+   OUTBOX_site-a msgs        1 (publish works)        1 (publish works)
+```
 
-3. The exact `nsc add export` invocation we wrote is the best-effort
-   from a test-tool author without hands-on nsc expertise. If the
-   first run of the federation scenario after `make setup-jwt` still
-   shows `INBOX_site-b.cfg.sources[0].domain = ""`, the export shape
-   needs refinement — that's worth one or two of your SRE/platform
-   team members' time to verify directly.
+The `$JS.>` service export landed in the chatapp account JWT
+correctly. NATS still strips `Source.Domain` at runtime. The
+account-level service export alone does not unlock cross-domain JS
+API delivery in this trust-chain topology.
+
+This is a precise, useful empirical result: the export is in the
+class of changes the trust chain needs, but it isn't the complete
+shape. There are at least two directions the chat-app team's
+SRE/platform people could investigate next:
+
+**Possibility A — `$JS.*` responders live on the system account.**
+
+JetStream's API subjects are conventionally serviced by the system
+account (`$SYS`), not the per-application account. Even with the
+chatapp account permitted to publish to `$JS.>`, the responder side
+of the request/reply may live on `$SYS` and the gateway may not be
+advertising the route to it. Worth checking:
+
+- whether the sys account needs a cross-cluster export/import
+- whether the gateway block in `nats.conf` needs an explicit
+  `system_account` directive or `jetstream` permissions
+- whether `nats server check jetstream` reports cross-domain
+  reachability after the chatapp export lands
+
+**Possibility B — topology choice.**
+
+The operator/JWT + supercluster-gateway + single-account-spanning-
+both-clusters shape may simply not support cross-domain JetStream
+Sources cleanly. Some NATS deployments use:
+
+- **Leafnodes** instead of gateway peers, with explicit JetStream
+  account import on the leaf side
+- **Single JS domain** spanning both clusters (drop the
+  `domain: site-a`/`site-b` distinction in the nats.gateway.*.conf
+  files), so there's no "cross-domain" call to fail in the first
+  place
+
+Both are larger changes than another JWT tweak. They're production
+shape decisions, not local-dev tooling tweaks.
+
+### Where the chat-app team picks up
+
+The test tool has reached the end of what a shell script can answer.
+The next iteration belongs to whoever owns the chat-app project's
+multi-site production deployment plan:
+
+1. Decide which of Possibilities A / B is the production topology
+   you're committing to.
+2. Update `docker-local/setup.sh` (or its sibling) to match.
+3. When the local-dev trust chain delivers the federation
+   end-to-end, this entry's status flips to "resolved" and the
+   test-tool-side `setup-jwt-supercluster.sh` becomes dead code
+   (delete it, the `setup-jwt` make target, and the
+   `ARCHITECTURE.md` §0 exception).
 
 ---
