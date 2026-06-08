@@ -1,7 +1,9 @@
 package jobguard
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,6 +49,39 @@ func TestRun_NoPanic_DoesNotAck(t *testing.T) {
 	msg := &fakeMsg{subject: "subj"}
 	Run(msg, func() { /* process owns its own Ack/Nak on the normal path */ })
 	assert.False(t, msg.acked, "Run must not Ack on the normal path — process owns disposal")
+}
+
+// captureLogs redirects the default slog logger to a buffer for the duration
+// of the test so assertions can inspect emitted records.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+func TestRun_Panic_LogsDistinctDropLine(t *testing.T) {
+	logs := captureLogs(t)
+	Run(&fakeMsg{subject: "chat.poison.subject"}, func() { panic("boom") })
+	out := logs.String()
+	assert.Contains(t, out, "dropped poison message", "Ack-drop must be greppably distinct from a redeliver")
+	assert.Contains(t, out, "chat.poison.subject", "drop log must carry the subject")
+}
+
+func TestRun_NoPanic_DoesNotLogDrop(t *testing.T) {
+	logs := captureLogs(t)
+	Run(&fakeMsg{subject: "subj"}, func() {})
+	assert.NotContains(t, logs.String(), "dropped poison message", "normal path must not log a drop")
+}
+
+func TestRun_PanicWithAckError_DoesNotLogDrop(t *testing.T) {
+	logs := captureLogs(t)
+	Run(&fakeMsg{subject: "subj", ackErr: errors.New("ack failed")}, func() { panic("boom") })
+	out := logs.String()
+	assert.Contains(t, out, "failed to ack after panic", "a failed Ack must be surfaced")
+	assert.NotContains(t, out, "dropped poison message", "a failed Ack is not a successful drop")
 }
 
 func TestRun_PanicWithAckError_DoesNotCrash(t *testing.T) {

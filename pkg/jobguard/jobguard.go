@@ -8,6 +8,12 @@
 // redelivers it after the pod restarts — turning a deterministic panic into a
 // crash loop driven by a single poison message. jobguard contains the panic so
 // the process survives.
+//
+// Two dispositions are offered. Per-message workers use Run, which Acks the
+// message on panic (poison-pill DROP). The batch worker (search-sync-worker)
+// uses Guard directly around its buffer/flush calls so a panic recovers and
+// the loop CONTINUES — the affected messages stay un-acked and JetStream
+// redelivers them after AckWait, avoiding a batch-wide drop.
 package jobguard
 
 import (
@@ -47,6 +53,12 @@ func Run(msg Message, process func()) {
 	if Guard(msg.Subject(), process) {
 		if err := msg.Ack(); err != nil {
 			slog.Error("failed to ack after panic", "error", err, "subject", msg.Subject())
+			return
 		}
+		// Distinct from Guard's recover log so an operator can tell a poison
+		// DROP (this path, Run) apart from a recover-and-REDELIVER (Guard used
+		// directly, e.g. search-sync-worker's batch loop) — both share Guard's
+		// recover line, but only Run disposes of the message.
+		slog.Warn("dropped poison message after panic (Ack)", "subject", msg.Subject())
 	}
 }
