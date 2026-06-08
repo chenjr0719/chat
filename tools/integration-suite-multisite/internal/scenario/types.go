@@ -11,15 +11,16 @@ import (
 // No cases, no base_input/case.input distinction. Variants are
 // separate scenario files.
 type Scenario struct {
-	Name           string               `yaml:"scenario"`
-	Source         string               `yaml:"source"`
-	Status         string               `yaml:"status,omitempty"`
-	Tag            string               `yaml:"tag"` // "positive" | "negative"
-	Sites          map[string]SiteBlock `yaml:"sites"`
-	CassandraData  []SeedCassandraTable `yaml:"cassandra_data,omitempty"`
-	PreFireScripts []string             `yaml:"pre_fire_scripts,omitempty"`
-	Input          Input                `yaml:"input"`
-	Expected       []Expected           `yaml:"expected"`
+	Name           string                `yaml:"scenario"`
+	Source         string                `yaml:"source"`
+	Status         string                `yaml:"status,omitempty"`
+	Tag            string                `yaml:"tag"` // "positive" | "negative"
+	Sites          map[string]SiteBlock  `yaml:"sites"`
+	CassandraData  []SeedCassandraTable  `yaml:"cassandra_data,omitempty"`
+	MongoData      []SeedMongoCollection `yaml:"mongo_data,omitempty"`
+	PreFireScripts []string              `yaml:"pre_fire_scripts,omitempty"`
+	Input          Input                 `yaml:"input"`
+	Expected       []Expected            `yaml:"expected"`
 
 	// SourcePath is the absolute path of the YAML file this Scenario
 	// was loaded from. Populated by LoadFile; not in the YAML itself.
@@ -70,6 +71,31 @@ type SeedCassandraTable struct {
 }
 
 type SeedCassandraRow map[string]any
+
+// SeedMongoCollection is one entry under top-level `mongo_data:`. Lets
+// a scenario pre-populate a Mongo collection beyond the three
+// `seed.<site>.seed.{users,rooms,memberships}` shapes — typically
+// chat-app collections the engine doesn't expose first-class fields
+// for (thread_rooms, thread_subscriptions, …).
+//
+// Site-scoped because Mongo is per-site (unlike shared Cassandra).
+// Docs uses plain []map[string]any (NOT a named type) so YAML-decoded
+// nested mappings inherit the unnamed map type — avoiding the §2.7
+// Gap B class of bug where named map types fall through gocql's
+// type switch. The Mongo BSON encoder doesn't have that quirk
+// (reflection-based, not exact-type), so this is belt-and-suspenders
+// rather than a hard requirement; the value type costs nothing extra.
+//
+// See sandbox_mongo_data.go for the substitution + insertion
+// pipeline. Collection names are validated against the
+// sandbox-owned collection list at Setup time — that list IS the
+// closed catalog of collections the harness will drop between
+// scenarios, so any collection a scenario writes must be in it.
+type SeedMongoCollection struct {
+	Site       string           `yaml:"site"`
+	Collection string           `yaml:"collection"`
+	Docs       []map[string]any `yaml:"docs"`
+}
 
 type SeedUserFlags map[string]bool
 

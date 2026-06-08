@@ -25,7 +25,20 @@ import (
 // seed-effects that own new collections will extend this — per-effect
 // declaration via SeedEffectDecl.writes_collections is the planned
 // mechanism (Phase 4).
-var sandboxOwnedCollections = []string{"users", "rooms", "subscriptions", "room_members"}
+// sandboxOwnedCollections is the closed set of Mongo collections the
+// sandbox drops between Setup runs so every scenario starts from
+// byte-identical state. Must remain in sync with
+// mongoDataAllowedCollections (sandbox_mongo_data.go) — that const
+// is the seed contract, this is the drop contract; any collection
+// the harness lets a scenario write, it MUST also reset.
+var sandboxOwnedCollections = []string{
+	"users",
+	"rooms",
+	"subscriptions",
+	"room_members",
+	"thread_rooms",
+	"thread_subscriptions",
+}
 
 // Sandbox is the per-scenario shared state. One Sandbox per
 // Scenario; cases run sequentially against it and accumulate effects
@@ -328,6 +341,15 @@ func (sb *Sandbox) Setup(ctx context.Context) error {
 	// Step 11: insert seeded rooms + subscriptions + room_members, per site.
 	if err := insertSeededRooms(ctx, sb); err != nil {
 		return fmt.Errorf("sandbox.Setup: seed rooms: %w", err)
+	}
+
+	// Step 11.5: insert mongo_data entries — author-controlled
+	// pre-population of sandbox-owned collections beyond the three
+	// {users, rooms, memberships} shapes. §2.7 T3.
+	if len(sb.Scenario.MongoData) > 0 {
+		if err := insertSeededMongoData(ctx, sb); err != nil {
+			return fmt.Errorf("sandbox.Setup: %w", err)
+		}
 	}
 
 	// Step 12: insert seeded Cassandra rows. Gated on Cassandra non-nil +

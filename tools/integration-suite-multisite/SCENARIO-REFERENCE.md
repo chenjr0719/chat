@@ -212,6 +212,101 @@ a shared single-cluster deployment.
 
 ---
 
+## 4.4 `mongo_data:` shape
+
+```yaml
+mongo_data:
+  - site: site-a
+    collection: thread_rooms
+    docs:
+      - _id: tr-1
+        roomId: r-shared
+        parentMsgId: m-abc
+        ownerAccount: ${alice.account}
+        createdAt: ${now - 5m}
+```
+
+Site-scoped pre-population of sandbox-owned Mongo collections beyond
+the three `seed.<site>.seed.{users,rooms,memberships}` shapes.
+Typically used for thread/notification scenarios that need a
+pre-existing `thread_rooms` or `thread_subscriptions` doc to address
+by primary key from the verb fire.
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `site` | yes | `site-a` or `site-b`. Must match a site declared under `sites:`. |
+| `collection` | yes | Closed enum — see below. |
+| `docs` | yes | List of documents to insert (each a plain map). |
+
+**Closed-catalog collections.** A `mongo_data` entry MUST reference
+a collection from the sandbox-owned set. Today:
+
+```
+users  rooms  subscriptions  room_members
+thread_rooms  thread_subscriptions
+```
+
+If a scenario needs a collection that isn't here yet, extend the
+catalog in `internal/runtime/sandbox_mongo_data.go`
+(`mongoDataAllowedCollections`) and `internal/runtime/sandbox.go`
+(`sandboxOwnedCollections`) together — the first is the seed
+contract, the second is the drop contract. Both must agree or the
+sandbox can't guarantee byte-identical state between runs.
+
+**Substitution and tokens.** Inside each doc value:
+- `${<alias>.<field>}` resolves like everywhere else — same Phase A
+  pass as the input subject.
+- `${now ± d}` resolves to a `time.Time` anchored at `Sandbox.StartTime`.
+- Strings that aren't tokens pass through unchanged.
+
+Recursion: substitution + now-token resolution walk into nested
+maps and lists, so a sub-document like `parent: { senderId:
+${alice.id}, createdAt: ${now - 1h} }` works without flattening.
+
+**Worked example — pre-existing thread room for a "subsequent
+reply" scenario:**
+
+```yaml
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-eng
+          name: Engineering
+          type: channel
+      memberships:
+        alice: [r-eng]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0parent00000000001x
+        room_id: r-eng
+        msg: "what do we know?"
+        created_at: ${now - 1h}
+        sender:
+          id: ${alice.id}
+          account: ${alice.account}
+
+mongo_data:
+  - site: site-a
+    collection: thread_rooms
+    docs:
+      - _id: tr-parent
+        roomId: r-eng
+        parentMsgId: m0parent00000000001x
+        createdAt: ${now - 1h}
+```
+
+The Cassandra seed gives the parent message a real sender (§2.7 Gap B
+fix); the Mongo seed registers the thread room. A scenario that
+fires a reply now exercises the **handleSubsequentThreadReply** path
+because `thread_rooms.tr-parent` already exists.
+
+---
+
 ## 4.5 `pre_fire_scripts` — author-owned setup hooks
 
 Some scenarios need pre-conditions that the seed grammar cannot
