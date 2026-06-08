@@ -56,18 +56,27 @@ func (g *gocqlExecutor) Exec(ctx context.Context, stmt string, binds ...any) err
 	return g.sess.Query(stmt, binds...).WithContext(ctx).Exec()
 }
 
-// tableColumnsFn returns the set of column names present in a table,
-// or nil if the table is absent from the keyspace metadata. Used by
-// Pass 3 (auto-bucket) to decide whether a table has both `bucket`
-// and `created_at` columns. Injected so unit tests can stub the
-// schema lookup without a live Cassandra session.
-type tableColumnsFn func(table string) map[string]struct{}
+// tableColumnsFn returns column-name → gocql.Type for the named table,
+// or nil if the table is absent from the keyspace metadata.
+//
+// Two consumers today:
+//
+//  1. applyAutoBucket — checks the presence of both `bucket` and
+//     `created_at` to decide whether to auto-compute the bucket.
+//  2. coerceColumnTypes — uses the per-column gocql.Type to convert
+//     YAML-decoded numeric literals to time.Time when the destination
+//     column is `timestamp` (gocql's marshalTimestamp accepts int64
+//     and time.Time exactly, not plain int — see §2.7 Gap A).
+//
+// Injected so unit tests can stub the schema lookup without a live
+// Cassandra session.
+type tableColumnsFn func(table string) map[string]gocql.Type
 
 // gocqlTableColumns returns a lookup function backed by gocql's
 // schema-describer cache. KeyspaceMetadata is cached per-session,
 // so the cost is amortized across all rows in one Setup pass.
 func gocqlTableColumns(sess *gocql.Session, keyspace string) tableColumnsFn {
-	return func(table string) map[string]struct{} {
+	return func(table string) map[string]gocql.Type {
 		km, err := sess.KeyspaceMetadata(keyspace)
 		if err != nil {
 			return nil
@@ -76,9 +85,12 @@ func gocqlTableColumns(sess *gocql.Session, keyspace string) tableColumnsFn {
 		if !ok {
 			return nil
 		}
-		out := make(map[string]struct{}, len(t.Columns))
-		for name := range t.Columns {
-			out[name] = struct{}{}
+		out := make(map[string]gocql.Type, len(t.Columns))
+		for name, col := range t.Columns {
+			if col == nil || col.Type == nil {
+				continue
+			}
+			out[name] = col.Type.Type()
 		}
 		return out
 	}
@@ -168,7 +180,7 @@ func runInsertCassandraSeed(
 	}
 
 	for tableIdx, entry := range sb.Scenario.CassandraData {
-		var schemaCols map[string]struct{}
+		var schemaCols map[string]gocql.Type
 		if lookupCols != nil {
 			schemaCols = lookupCols(entry.Table)
 		}
@@ -190,6 +202,12 @@ func runInsertCassandraSeed(
 				return fmt.Errorf("cassandra_data[%s][%d]: %w", entry.Table, rowIdx, err)
 			}
 			applyAutoBucket(row, schemaCols, sizer)
+			// Type coercion + UDT normalization MUST run after the
+			// substitution + bucket passes (so coercion sees the
+			// post-substitute scalar) but BEFORE the binder so gocql
+			// sees gocql-acceptable shapes. See §2.7 Gap A / Gap B.
+			coerceColumnTypes(row, schemaCols)
+			normalizeNamedMaps(row)
 
 			stmt, binds := buildInsertStatement(entry.Table, row)
 			if err := exec.Exec(ctx, stmt, binds...); err != nil {
@@ -241,7 +259,7 @@ func substituteCassandraRowTokens(row scenario.SeedCassandraRow, ctx Context) er
 // row didn't reach pass 1 — most likely because no ${now ...} token
 // was used). All of these are valid "author knows what they want"
 // states.
-func applyAutoBucket(row scenario.SeedCassandraRow, schemaCols map[string]struct{}, sizer msgbucket.Sizer) {
+func applyAutoBucket(row scenario.SeedCassandraRow, schemaCols map[string]gocql.Type, sizer msgbucket.Sizer) {
 	if schemaCols == nil {
 		return
 	}
@@ -259,6 +277,96 @@ func applyAutoBucket(row scenario.SeedCassandraRow, schemaCols map[string]struct
 		return
 	}
 	row["bucket"] = sizer.Of(t)
+}
+
+// coerceColumnTypes walks every column in a row and coerces values to
+// the type gocql expects for that column. Today this handles the one
+// case that bites every cassandra_data author who writes a literal
+// epoch-millis value for a timestamp column (§2.7 Gap A):
+//
+//	YAML "created_at: 1748736000000"  → row["created_at"] = int(...)
+//	gocql v1.7.0 marshalTimestamp     → accepts int64 + time.Time only,
+//	                                    rejects plain int (exact type)
+//
+// Coercion path: numeric value + timestamp column → time.Time via
+// time.UnixMilli. Silently no-ops when the schema lookup is unavailable
+// (so the pre-existing nil-schema test path still works) and on values
+// that already type-check (time.Time, int64, etc.).
+//
+// One generic conversion; any future scenario seeding any timestamp
+// column benefits without scenario-specific knowledge in the engine.
+func coerceColumnTypes(row scenario.SeedCassandraRow, schemaCols map[string]gocql.Type) {
+	if schemaCols == nil {
+		return
+	}
+	for _, col := range sortedCassandraRowKeys(row) {
+		colType, ok := schemaCols[col]
+		if !ok {
+			continue
+		}
+		if colType != gocql.TypeTimestamp {
+			continue
+		}
+		switch v := row[col].(type) {
+		case int:
+			row[col] = time.UnixMilli(int64(v)).UTC()
+		case int64:
+			row[col] = time.UnixMilli(v).UTC()
+		case float64:
+			row[col] = time.UnixMilli(int64(v)).UTC()
+		}
+	}
+}
+
+// normalizeNamedMaps deep-converts any scenario.SeedCassandraRow
+// values (a named map type whose underlying type is map[string]any)
+// to plain map[string]interface{} so gocql's UDT marshal path
+// matches them (§2.7 Gap B).
+//
+//	gocql v1.7.0 marshalUDT type-switches on the EXACT type
+//	`map[string]interface{}` (or UDTMarshaler / cql-tagged struct).
+//	A nested YAML mapping decoded inside a SeedCassandraRow inherits
+//	the parent's named type — and falls through the switch with
+//	"cannot marshal scenario.SeedCassandraRow into chat.<UDT>".
+//
+// Walks lists too, since UDT-set / UDT-list columns nest one level.
+// Mutates in place so the binder's later sort+enumerate sees the
+// normalized shape. One generic conversion; any future UDT column
+// (sender / mentions / quoted_parent_message / …) benefits.
+func normalizeNamedMaps(row scenario.SeedCassandraRow) {
+	for k, v := range row {
+		row[k] = normalizeValue(v)
+	}
+}
+
+// normalizeValue is the recursive worker for normalizeNamedMaps.
+// Exposed at function scope (not nested) so unit tests can exercise
+// the list / nested-map branches without going through the row
+// wrapper.
+func normalizeValue(value any) any {
+	switch v := value.(type) {
+	case scenario.SeedCassandraRow:
+		out := make(map[string]interface{}, len(v))
+		for k, inner := range v {
+			out[k] = normalizeValue(inner)
+		}
+		return out
+	case map[string]any:
+		// Already an unnamed map; still descend in case it contains a
+		// nested SeedCassandraRow somewhere (e.g. a list of UDTs whose
+		// elements decoded as the named type).
+		for k, inner := range v {
+			v[k] = normalizeValue(inner)
+		}
+		return v
+	case []any:
+		for i, inner := range v {
+			v[i] = normalizeValue(inner)
+		}
+		return v
+	default:
+		return value
+	}
 }
 
 // buildInsertStatement assembles the CQL string + parallel binds slice
