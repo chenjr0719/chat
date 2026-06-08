@@ -263,8 +263,48 @@ Recursion: substitution + now-token resolution walk into nested
 maps and lists, so a sub-document like `parent: { senderId:
 ${alice.id}, createdAt: ${now - 1h} }` works without flattening.
 
-**Worked example — pre-existing thread room for a "subsequent
-reply" scenario:**
+**When to use `mongo_data` — and when NOT to use it**
+
+`mongo_data` seeds **state that already exists before the fire under
+test** — state the system genuinely would have produced earlier, in
+some prior interaction the scenario isn't exercising. The classic
+shape is "a pre-condition the fire reads from but doesn't write to":
+
+  ✓ a subscription that `room-worker` created earlier (a fire is
+    going to test the subscription-reading side of some other flow)
+  ✓ a `thread_rooms` doc that a peer site's federation event is
+    about to update (the fire under test is the federation handler,
+    not the thread-creation that produced the doc)
+  ✓ historical `notifications` rows for a "mark-as-read" verb's
+    side-effect test
+
+`mongo_data` is **NOT** a substitute for multi-fire. Specifically,
+**do not fabricate the output of a fire you're skipping** in order
+to test what would have come AFTER it. Example of the anti-pattern:
+seeding `thread_rooms` + `thread_subscriptions` to simulate "the
+first thread reply happened" so you can fire reply #2 and call it a
+test of the subsequent-reply path.
+
+That fails for a reason worth naming. The system's real
+first-reply path produces a *specific* shape — UUIDv7
+`thread_room._id`, exact `replyAccounts` contents, the parent's
+`thread_room_id` stamp in Cassandra, the
+`(threadRoomId, userAccount)` unique-index linkage. A hand-built
+fixture either:
+
+- diverges from that shape and produces a test that's green
+  against state the system would never produce, or
+- has to be kept in lockstep across `mongo_data` + `cassandra_data`
+  by hand, which is fiddly and breaks subtly when the production
+  shape evolves.
+
+The legitimate path for subsequent-reply / dedup / redelivery /
+multi-step scenarios is the DAG-of-tasks / multi-fire work in
+`docs/integration-suite-plan-ahead.md` §2.3 (T2). Until that lands,
+those scenarios stay blocked — `mongo_data` is not the workaround.
+
+**Worked example — pre-existing subscription for a federation
+arrival test:**
 
 ```yaml
 sites:
@@ -278,32 +318,37 @@ sites:
           type: channel
       memberships:
         alice: [r-eng]
+  site-b:
+    seed:
+      users:
+        bob: { verified: true }
 
-cassandra_data:
-  - table: messages_by_id
-    rows:
-      - message_id: m0parent00000000001x
-        room_id: r-eng
-        msg: "what do we know?"
-        created_at: ${now - 1h}
-        sender:
-          id: ${alice.id}
-          account: ${alice.account}
-
+# Pre-existing thread_rooms doc on site-b — modeling "bob already
+# replied locally to m-parent earlier; the doc was created by
+# message-worker-site-b at that prior moment." The scenario fires
+# a cross-site event that inbox-worker-site-b will upsert AGAINST
+# this existing doc — testing the federation-receive side, NOT
+# the thread-creation side.
 mongo_data:
-  - site: site-a
+  - site: site-b
     collection: thread_rooms
     docs:
-      - _id: tr-parent
+      - _id: tr-existing
         roomId: r-eng
-        parentMsgId: m0parent00000000001x
+        parentMsgId: m-parent
+        parentMsgCreatedAt: ${now - 1h}
+        replyAccounts: ["${bob.account}"]
         createdAt: ${now - 1h}
 ```
 
-The Cassandra seed gives the parent message a real sender (§2.7 Gap B
-fix); the Mongo seed registers the thread room. A scenario that
-fires a reply now exercises the **handleSubsequentThreadReply** path
-because `thread_rooms.tr-parent` already exists.
+The thread_rooms doc is genuine pre-existing state: bob's earlier
+local reply would have created it. The scenario's fire (a federated
+`thread_subscription_upserted` event arriving from site-a) is what
+we're testing. `inbox-worker-site-b` upserting against the existing
+doc — joining alice into `replyAccounts`, materializing a new
+`thread_subscriptions` row — is the assertion target. No
+fabrication of first-reply output; the system genuinely produces
+this pre-state in production.
 
 ---
 
