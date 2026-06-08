@@ -130,12 +130,20 @@ func buildRoomDocs(
 		if err != nil {
 			return nil, fmt.Errorf("seed.rooms[%s]: %w", r.ID, err)
 		}
+		// userCount defaults to the derived membership count (mirrors
+		// what room-worker would write at room-create time). Explicit
+		// SeedRoom.UserCount overrides the derive — see the struct's
+		// docstring for the large-room-cap scenario rationale.
+		userCount := len(uids)
+		if r.UserCount != nil {
+			userCount = *r.UserCount
+		}
 		doc := bson.M{
 			"_id":       r.ID,
 			"name":      r.Name,
 			"type":      effectiveRoomType(r.Type),
 			"siteId":    siteID,
-			"userCount": len(uids),
+			"userCount": userCount,
 			"appCount":  0,
 			"uids":      uids,
 			"accounts":  accounts,

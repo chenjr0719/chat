@@ -140,11 +140,20 @@ seed:
     - id: r-eng            # required; must be unique within scenario
       type: channel        # "channel" or "dm"
       name: Engineering    # required for channel; omit for dm
+      user_count: 501      # optional; overrides the auto-derived count
 ```
 
 Rooms are inserted into the site's Mongo `rooms` collection before the
 fire. Closed enum for `type`. DM rooms are limited to two members (see
 `docs/spec-room-subscription-seed.md`).
+
+`user_count` defaults to the number of seeded memberships for the
+room (mirrors what `room-worker` writes at create-room time). Set
+explicitly when the scenario needs to trip the **large-room post
+restriction** without actually seeding hundreds of members: the gate
+in `message-gatekeeper/handler.go` reads `rooms.userCount` (cached
+metadata) — so `user_count: 501` with two real members is the
+canonical shape for exercising the cap.
 
 ### 3.3 Seed — memberships
 

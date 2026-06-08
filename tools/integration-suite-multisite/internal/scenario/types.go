@@ -78,6 +78,19 @@ type SeedRoom struct {
 	Name      string   `yaml:"name,omitempty"`
 	Type      RoomType `yaml:"type,omitempty"`
 	CreatedAt string   `yaml:"created_at,omitempty"`
+
+	// UserCount overrides the auto-derived count when set. The default
+	// behavior (UserCount == nil) writes `userCount = len(memberships)`
+	// into Mongo's `rooms` doc, which matches what room-worker would
+	// have written for a real create-room flow. Scenarios that need to
+	// trip the large-room post restriction
+	// (message-gatekeeper/handler.go:232-236 reads rooms.userCount via
+	// roommetacache.FetchFromMongo) set this explicitly to a value
+	// above the configured threshold — the gate keys on the cached
+	// metadata value, not on the actual subscription count, so
+	// `userCount: 501` with two seeded members is the canonical
+	// scenario shape for exercising the cap.
+	UserCount *int `yaml:"user_count,omitempty"`
 }
 
 type RoomType string
