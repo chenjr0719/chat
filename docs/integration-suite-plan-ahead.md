@@ -23,12 +23,13 @@ matrix) plus `performance.json` (per-case latest/best/worst).
 **Reference docs (today's design — current, accurate):**
 - `tools/integration-suite/README.md` — quick start, env vars
 - `tools/integration-suite/ARCHITECTURE.md` — runtime model
-- `tools/integration-suite/SCENARIO-REFERENCE.md` — YAML grammar
-- `tools/integration-suite/AUTHORING.md` — workflow
-- `tools/integration-suite/RUNBOOK.md` — operate + read results
-- `docs/integration-suite-sync-register.md` — drift register
-- `docs/integration-suite-oss-replacement-search.md` — OSS swap analysis
-- `docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md` — multi-site spec (approved, not implemented)
+- `tools/integration-suite-multisite/SCENARIO-REFERENCE.md` — YAML grammar (active)
+- `tools/integration-suite-multisite/AUTHORING.md` — workflow (active)
+- `tools/integration-suite-multisite/RUNBOOK.md` — operate + read results (active)
+- `tools/archived/integration-suite/STALE.md` — legacy single-site suite, feature reference only
+- `tools/archived/integration-suite/docs/sync-register.md` — drift register (archived)
+- `tools/archived/integration-suite/docs/oss-replacement-research.md` — OSS swap analysis (archived)
+- `docs/superpowers/specs/2026-06-03-integration-suite-multisite-design.md` — multi-site spec (implemented, see `docs/integration-suite-multisite-findings.md`)
 
 **The frame in one diagram:**
 
