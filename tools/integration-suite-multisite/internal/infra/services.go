@@ -36,7 +36,24 @@ func startService(ctx context.Context, networkName, svc, tag, siteID, repoRoot, 
 		return nil, fmt.Errorf("startService %s: repoRoot required for trust-chain mounts", svc)
 	}
 	req := testcontainers.ContainerRequest{
-		Image:    serviceImage(svc, tag),
+		Image: serviceImage(svc, tag),
+		// Set the container's host-side Name (not just the network alias)
+		// so logs_tail's `docker logs <name>` resolves under USE_INFRA.
+		// Without this, testcontainers picks a random name (e.g.
+		// `nostalgic_galois`) and `docker logs <svc>-<site>` can only
+		// resolve via the docker-compose service label, which the
+		// USE_INFRA stack doesn't set — so logs_tail silently reads
+		// zero events. NetworkAliases below remains the in-network DNS
+		// name services use to dial each other; Name is purely the
+		// host-side handle.
+		//
+		// Name collisions on aborted runs are a known consequence: with
+		// Ryuk disabled (CLAUDE.md §4), a SIGKILL'd previous run leaks
+		// these named containers and the next boot will fail until the
+		// operator runs `docker rm -f <leaked-name>`. Acceptable
+		// trade-off for the logs_tail primitive to work; revisited if
+		// the testcontainers Reuse/cleanup story changes.
+		Name:     svc + "-" + siteID,
 		Networks: []string{networkName},
 		NetworkAliases: map[string][]string{
 			// Use the "<svc>-<siteID>" alias so both site instances

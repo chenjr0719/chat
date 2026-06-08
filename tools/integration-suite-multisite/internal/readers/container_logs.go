@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -128,7 +129,6 @@ func (r *ContainerLogsReader) Watch(ctx context.Context, _ string, start time.Ti
 
 	go func() {
 		defer close(out)
-		defer cmd.Wait() //nolint:errcheck
 		scanner := bufio.NewScanner(stdout)
 		// Allow lines up to 1 MiB
 		buf := make([]byte, 0, 64*1024)
@@ -160,6 +160,23 @@ func (r *ContainerLogsReader) Watch(ctx context.Context, _ string, start time.Ti
 				Payload:     entry,
 				Type:        typ,
 			}
+		}
+		// Reap the `docker logs -f` subprocess and surface a non-zero
+		// exit loudly. The previous //nolint:errcheck swallowed bad-
+		// container-name failures: `docker logs <missing>` writes to
+		// stderr (uncaptured), exits non-zero, and the empty-stdout
+		// scanner already returned false above — so the assertion looks
+		// indistinguishable from "log line never appeared" (worst case:
+		// false-green on `not: true` assertions). The ctx.Err() guard
+		// suppresses the warning on normal Sandbox.Teardown, where
+		// the harness cancels the context to stop the follow.
+		if waitErr := cmd.Wait(); waitErr != nil && ctx.Err() == nil {
+			slog.Warn(
+				"logs_tail: docker logs exited non-zero — container likely not resolvable by the literal name "+
+					"(or the docker-compose service label query returned an unresolvable ref)",
+				"container_ref", containerRef,
+				"err", waitErr,
+			)
 		}
 	}()
 	return out, nil
