@@ -385,6 +385,71 @@ ad-hoc later.
 Independent of the envelope+DAG direction in §2.3-§3; ship when
 demand arrives.
 
+### 2.9 Tool primitives must distinguish broken plumbing from absent observation
+
+A class of bug worth naming explicitly: a poller whose substrate
+fails (container can't be found, NATS subscription never opens,
+Mongo query errors out) produces **zero events**, and the matcher
+can't tell that apart from "the behavior under test didn't
+happen." The two failure modes look identical at the assertion
+layer, and one is benign (the system correctly didn't do the
+thing) while the other is the tool lying about what it observed.
+
+This is especially dangerous for `not: true` assertions, which
+say "this thing should NOT appear." A broken-plumbing poller
+reads zero events, and `not: true` on zero events trivially
+passes — **silently green even when the thing did appear.** A
+worst-case assertion that "the system should NEVER log
+'permission denied'" passes on every run, even if the system logs
+it on every request.
+
+The `logs_tail` case (Run 72d4, fixed in commit 5ee1a74) was the
+first surfaced instance: the testcontainers-booted stack named
+its service containers randomly, the docker-compose label query
+returned nothing, the literal-name fallback returned an
+unresolvable string, `docker logs <bad-name>` exited non-zero,
+and three layers of `//nolint:errcheck` discarded the error. The
+visible effect was "0 events polled, Eventually timed out."
+
+**Principle:** every poller that wraps an external substrate
+should distinguish three states explicitly:
+- **Substrate healthy, observation present** — emit events; matcher does its job.
+- **Substrate healthy, observation absent** — emit nothing; matcher's not-true correctly passes.
+- **Substrate broken** — surface a hard error (or at minimum a loud `slog.Warn` with the substrate's diagnostic) — never let it look like state 2.
+
+The current poller registry (`internal/runtime/pollers/`) holds
+six primitives. Each one wraps an external substrate that can
+fail in similar shape. The `logs_tail` fix added the loud-warning
+discipline at the `cmd.Wait()` boundary; the same audit should be
+done for the other five:
+
+| Poller | Substrate | Possible silent-failure mode |
+|---|---|---|
+| `reply` | dispatcher's reply buffer | wrong verb (reply only fires for nats_request) — covered in §7.2 pitfall |
+| `mongo_find` | Mongo driver query | connection error returned as no-match; covered by gocql-style err returns today (unverified) |
+| `cassandra_select` | gocql iter | iter.Close() error ignored — would mask cluster-side error as "no rows" |
+| `jetstream_consume` | js.Stream subscribe | subscribe-error swallowed; consumer-create silent failure |
+| `nats_subscribe` | core NATS subscribe | subscribe error returned by Warm — already loud, modulo same disciplines as logs_tail |
+| `logs_tail` | docker logs subprocess | **fixed** in 5ee1a74; see commit body for the trail |
+
+Audit + harm-reduction pass: walk the other five pollers, drop
+any `errcheck` suppressions on substrate boundaries, surface
+errors loudly. ~1-2 hours of focused work; independent of any
+spec direction.
+
+**Test-placement corollary.** When verifying *poller behavior*
+(does the matcher behave correctly with present-vs-absent events
+under not:true?) the right surface is a **Go unit test** under
+`internal/matchers/` or `internal/readers/`, not a YAML scenario.
+A YAML scenario asserting "this matcher should have failed" is
+either (a) perpetually red in the report — noise that authors
+have to learn to ignore — or (b) wrapped in awkward
+self-referential scaffolding. Go tests run in milliseconds, live
+next to the code they exercise, and don't churn the
+scenarios/drafts/ confusion matrix. A scenario is for "the system
+does X under Y verb fire"; a Go test is for "the matcher returns
+Z when given W input."
+
 ---
 
 ## 3. The model these proposals converge to
@@ -529,6 +594,7 @@ Two separate specs were anticipated, each non-trivial:
 | **Envelope + DAG + chaos engine** | Replace `cases:` with `input: [DAG]` + `expected: {positive,negative}` + `chaos:` loop; per-iteration fresh state | **Not yet specced** — this doc remains the launchpad |
 | **Seed-grammar extensions (T1, T3)** | Concrete in-grammar fixes for room metadata and arbitrary Mongo doc seeding (see §2.7) | **Surfaced; not shipped.** Ship when a scenario demands either. Cheaper than envelope+DAG; independent of it. |
 | **Scenario organization (§2.8)** | Allow arbitrary subdirectory nesting under `scenarios/drafts/` and `scenarios/approved/`; show path in failure reports + interactive menu | **Surfaced; not shipped.** Half-day implementation, no spec needed. Ship when the flat layout starts hurting. |
+| **Substrate-error audit (§2.9)** | Drop `//nolint:errcheck` suppressions at substrate boundaries across the six pollers; convert silent failures to loud `slog.Warn` (or hard errors). `logs_tail` done; five more to audit. | **One done; rest pending.** 1-2 hours per remaining poller. Independent of any spec direction. |
 
 **Sequencing — the original "which spec first" question
 is partially answered.** Multi-site shipped first (case-based world
