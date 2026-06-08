@@ -16,7 +16,7 @@ tag: negative
 # user posting into a room they don't belong to.
 #
 # alice is verified (can authenticate + fire) but has NO membership in
-# r-general, so GetSubscription returns errNotSubscribed. Content is
+# r-nosub, so GetSubscription returns errNotSubscribed. Content is
 # non-empty and requestId/id are valid, so the subscription check is the
 # ONLY thing that can reject — isolating the gate. requestId is a valid
 # UUID so the reply is routable and we can assert the reason code on it.
@@ -33,7 +33,7 @@ sites:
 input:
   site: site-a
   verb: jetstream_publish
-  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  subject: chat.user.${alice.account}.room.r-nosub.site-a.msg.send
   payload:
     id: m4notsubscribed0rej1
     content: posting to a room I never joined

@@ -50,6 +50,9 @@ sites:
       memberships:
         bob: [r-shared]
 
+pre_fire_scripts:
+  - prep-outbox.sh
+
 input:
   site: site-a
   verb: nats_request

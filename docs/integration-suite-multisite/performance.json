@@ -1,0 +1,469 @@
+{
+  "schemaVersion": 1,
+  "lastRunAt": "2026-06-08T22:29:02Z",
+  "cases": {
+    "cross-site-message-federation/stub": {
+      "latest": {
+        "ranAt": "2026-06-06T22:58:28Z",
+        "verdict": "fail",
+        "durationMs": 15104,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 15.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"message\":{\"id\":\"mCrossSiteFed0000001\",\"roomId\":\"r-shared\"}}}\n  reply from system: (no events polled)\n  events polled:     0",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T22:45:50Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T22:45:50Z"
+      }
+    },
+    "cross-site-room-rename-federation/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T21:31:38Z",
+        "verdict": "pass",
+        "durationMs": 12045
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T13:14:47Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T23:06:21Z"
+      }
+    },
+    "cross-site-seed-visibility/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T21:31:38Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-06T22:38:32Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-06T22:38:32Z"
+      }
+    },
+    "gatekeeper-empty-content-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 5213
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      }
+    },
+    "gatekeeper-large-room-bot-bypass/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 102
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      }
+    },
+    "gatekeeper-large-room-member-blocked/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 5213
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      }
+    },
+    "gatekeeper-large-room-owner-bypass/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 108
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:47:40Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T21:41:39Z"
+      }
+    },
+    "gatekeeper-large-room-thread-reply-exempt/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 102
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T21:41:39Z"
+      }
+    },
+    "gatekeeper-malformed-requestid-silent-drop/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 10113
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:45:29Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T17:21:30Z"
+      }
+    },
+    "gatekeeper-not-subscribed-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 5213
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      }
+    },
+    "gatekeeper-quote-cross-context-mismatch-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 5213
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:10:24Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:10:24Z"
+      }
+    },
+    "gatekeeper-quote-happy-path-embeds-snapshot/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:24:55Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:24:55Z"
+      }
+    },
+    "gatekeeper-quote-nonexistent-parent-drops-message/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 10103
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:21:30Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:21:30Z"
+      }
+    },
+    "gatekeeper-thread-reply-missing-parent-createdat-rejected/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 5213
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:42:01Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:42:01Z"
+      }
+    },
+    "gatekeeper-whitespace-only-content-accepted/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:30:06Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:30:06Z"
+      }
+    },
+    "history-service-get-message-by-id/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T21:31:38Z",
+        "verdict": "pass",
+        "durationMs": 103
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T14:00:34Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T14:00:34Z"
+      }
+    },
+    "infra-sanity-rooms-pipeline-site-a/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T21:31:38Z",
+        "verdict": "pass",
+        "durationMs": 205
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T01:04:56Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-07T14:43:06Z"
+      }
+    },
+    "infra-sanity-rooms-pipeline-site-b/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T21:31:38Z",
+        "verdict": "pass",
+        "durationMs": 205
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T01:04:56Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-07T14:43:06Z"
+      }
+    },
+    "logs-tail-positive-captures-request-failed/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T20:04:09Z",
+        "verdict": "pass",
+        "durationMs": 122
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:50:28Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T17:50:28Z"
+      }
+    },
+    "logs-tail-regression-guard-not-must-fail-when-line-present/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T20:04:09Z",
+        "verdict": "fail",
+        "durationMs": 111,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Failed after 0.100s.\nMatchShape: expected no event to match shape map[code:bad_request msg:request failed], but event #0 (location=\"logs_tail\") did with payload map[account:alice cause:invalid requestId \"abc123\": must be a hyphenated UUID code:bad_request level:INFO msg:request failed reason: request_id:abc123 room_id:r-general time:2026-06-08T20:05:05.750054237Z]",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T17:50:28Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T17:50:28Z"
+      }
+    },
+    "message-pipeline-send-and-persist/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 211
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T14:00:34Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-07T14:00:34Z"
+      }
+    },
+    "message-worker-at-all-mention-persisted/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:30:06Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T19:30:06Z"
+      }
+    },
+    "message-worker-mentions-persisted/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 104
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:32:03Z"
+      }
+    },
+    "room-create-federates-cross-site/stub": {
+      "latest": {
+        "ranAt": "2026-06-06T22:21:04Z",
+        "verdict": "fail",
+        "durationMs": 5003,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"status\":\"accepted\"}}\n  reply from system: {\"body_json\":{\"code\":\"not_found\",\"error\":\"user \\\"bob\\\" not found\",\"reason\":\"user_not_found\"},\"latency_ms\":3}\n  mismatch reason:   matches_shape: field \"body_json.status\" missing\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T21:59:13Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T21:59:13Z"
+      }
+    },
+    "room-creates-federates-to-site-b/stub": {
+      "latest": {
+        "ranAt": "2026-06-06T22:21:04Z",
+        "verdict": "fail",
+        "durationMs": 5002,
+        "errorBlocks": [
+          {
+            "attempt": 1,
+            "label": "Timed out after 5.000s.\nMatchShape failed.\n  expected:          {\"body_json\":{\"status\":\"accepted\"}}\n  reply from system: {\"body_json\":{\"code\":\"bad_request\",\"error\":\"request must include at least one of users, orgs, channels, or name\"},\"latency_ms\":1}\n  mismatch reason:   matches_shape: field \"body_json.status\" missing\n  events polled:     1",
+            "events": null
+          }
+        ]
+      },
+      "best": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T21:59:13Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-06T21:59:13Z"
+      }
+    },
+    "single-site-room-create-baseline/stub": {
+      "latest": {
+        "ranAt": "2026-06-07T00:50:06Z",
+        "verdict": "pass",
+        "durationMs": 103
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-06T22:38:32Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-06T22:38:32Z"
+      }
+    },
+    "thread-first-reply-happy-path/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 106
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T20:13:52Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T19:15:46Z"
+      }
+    },
+    "thread-first-reply-remote-parent-federates-subscription/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 224
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T20:22:25Z"
+      },
+      "worst": {
+        "verdict": "fail",
+        "ranAt": "2026-06-08T20:48:58Z"
+      }
+    },
+    "thread-reply-to-nonexistent-parent-creates-orphan/stub": {
+      "latest": {
+        "ranAt": "2026-06-08T22:29:02Z",
+        "verdict": "pass",
+        "durationMs": 5105
+      },
+      "best": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:42:01Z"
+      },
+      "worst": {
+        "verdict": "pass",
+        "ranAt": "2026-06-08T18:42:01Z"
+      }
+    }
+  }
+}

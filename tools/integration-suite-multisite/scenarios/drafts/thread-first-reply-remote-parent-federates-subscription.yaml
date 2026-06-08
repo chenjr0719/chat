@@ -18,11 +18,11 @@ tag: positive
 # thread_subscription_upserted OUTBOX event addressed to that author's
 # home site, so the subscription federates.
 #
-# Setup: bob is a remote user — minted on site-b, projected into site-a's
+# Setup: remotebob is a remote user — minted on site-b, projected into site-a's
 # `users` collection with siteId=site-b via remote_users. The seeded
-# parent message (in shared Cassandra) names bob as its sender, so when
+# parent message (in shared Cassandra) names remotebob as its sender, so when
 # alice (site-a) fires the first reply, the worker on site-a resolves the
-# parent author as bob, sees his home site is site-b (remote), and
+# parent author as remotebob, sees his home site is site-b (remote), and
 # publishes outbox.site-a.to.site-b.thread_subscription_upserted.
 #
 # The OUTBOX publish is the worker's DIRECT output and the surface under
@@ -36,7 +36,7 @@ tag: positive
 #
 # Surfaces:
 #   1  canonical reply published on site-a (gatekeeper validated)
-#   2  parent author (bob) thread subscription inserted LOCALLY on site-a
+#   2  parent author (remotebob) thread subscription inserted LOCALLY on site-a
 #   3  replier (alice) thread subscription inserted on site-a
 #   4  OUTBOX_site-a carries thread_subscription_upserted → destSiteId site-b
 
@@ -46,7 +46,7 @@ sites:
       users:
         alice: { verified: true }
       remote_users:
-        bob:
+        remotebob:
           home_site: site-b
       rooms:
         - id: r-general
@@ -59,7 +59,7 @@ sites:
   site-b:
     seed:
       users:
-        bob: { verified: true }
+        remotebob: { verified: true }
 
 cassandra_data:
   - table: messages_by_id
@@ -70,10 +70,10 @@ cassandra_data:
         site_id: site-a
         msg: "the parent message, authored by a remote user"
         sender:
-          id: u-bob
-          account: bob
-          eng_name: bob
-          company_name: bob
+          id: u-remotebob
+          account: remotebob
+          eng_name: remotebob
+          company_name: remotebob
   - table: messages_by_room
     rows:
       - room_id: r-general
@@ -83,10 +83,10 @@ cassandra_data:
         site_id: site-a
         msg: "the parent message, authored by a remote user"
         sender:
-          id: u-bob
-          account: bob
-          eng_name: bob
-          company_name: bob
+          id: u-remotebob
+          account: remotebob
+          eng_name: remotebob
+          company_name: remotebob
 
 pre_fire_scripts:
   - prep-outbox.sh
@@ -116,7 +116,7 @@ expected:
           id: m1xsitethreadreply01
           threadParentMessageId: m0remoteparent000001
 
-  # Parent author (bob) subscribed LOCALLY on site-a — the local insert is
+  # Parent author (remotebob) subscribed LOCALLY on site-a — the local insert is
   # independent of the cross-site publish.
   - location: mongo_find
     site: site-a
@@ -124,9 +124,9 @@ expected:
       collection: thread_subscriptions
       filter:
         parentMessageId: m0remoteparent000001
-        userAccount: bob
+        userAccount: remotebob
     match:
-      userAccount: bob
+      userAccount: remotebob
     timeout: 10s
 
   - location: mongo_find
@@ -141,7 +141,7 @@ expected:
     timeout: 10s
 
   # THE cross-site behavior: the worker published a thread_subscription_upserted
-  # OUTBOX event on site-a, routed to bob's home site (site-b). Envelope-only
+  # OUTBOX event on site-a, routed to remotebob's home site (site-b). Envelope-only
   # match (payload is base64-encoded).
   - location: jetstream_consume
     site: site-a
