@@ -321,6 +321,70 @@ Substitution + `${now ± d}` tokens apply.
 symptom of §2.3 — the DAG-of-tasks proposal is the structural
 answer. Not duplicated here.
 
+### 2.8 Scenario organization — arbitrary directory structure
+
+Today `SCENARIO-REFERENCE.md` §1 mandates a flat layout under
+`scenarios/drafts/` (and `scenarios/approved/`): one scenario per
+file, no subdirectories. That was a self-imposed rule from when
+there were three scenarios and grouping was overkill. As the
+scenario set grows, authors will want to organize by service
+(`messages/`, `rooms/`, `history/`), by phase (`infra-sanity/`,
+`pipelines/`, `federation/`), or by domain — without the harness
+caring.
+
+Proposal: lift the flat-layout restriction. Allow arbitrary
+subdirectory nesting under both `scenarios/drafts/` and
+`scenarios/approved/`. Scenario discovery walks recursively rather
+than globbing one directory.
+
+**Rules that fall out:**
+
+- **Symmetric across `drafts/` and `approved/`.** CI scoring keys
+  off the `status: approved` field, not the directory — directory
+  structure is purely author organization.
+- **`scenario:` field stays the perf-key.** Loader enforces
+  uniqueness of the `scenario:` field across all loaded files at
+  validate time. Two scenarios in different subdirs with the same
+  `scenario:` field = loader error. This keeps `performance.json`
+  history stable across re-organizations (moving a YAML between
+  subdirs doesn't churn the perf-key) and preserves the existing
+  per-scenario latest/best/worst tracking.
+- **`pre_fire_scripts:` resolution is unchanged.** Paths are
+  resolved relative to the YAML's directory (already documented at
+  `SCENARIO-REFERENCE.md` §4.5) — co-located scripts continue to
+  work in any nesting depth.
+
+**Reporting:**
+
+- **Non-interactive (`make local`) report.** On a failing scenario,
+  the file path appears alongside the scenario heading in
+  `last-run.md`. Operator can `vi` straight to the file without
+  hunting.
+- **Interactive menu.** Each row shows the path alongside the
+  scenario name (e.g. `messages/send-and-persist`). Sort order is
+  alphabetic by full path — simplest predictable default; grouping
+  by top-level directory with separators is a UX consideration left
+  to whoever implements.
+
+**Natural follow-up:** path-prefix filtering. Once subdirs exist,
+the obvious next ask is `make local SCENARIOS=messages/` (or the
+interactive equivalent `pick all under messages/`) to run a subset.
+Not in this proposal but worth naming so it's not invented
+ad-hoc later.
+
+**Implementation cost:** half a day, no spec needed.
+- Discovery: `filepath.Walk` instead of `filepath.Glob` (~10 lines).
+- `scenario.Scenario.SourcePath` already exists for `pre_fire_scripts`
+  resolution; reuse it for reporting + menu display.
+- Loader: cross-file uniqueness check on `scenario:` field at
+  validate time.
+- Reporter: append path next to scenario heading on failure
+  (one line).
+- Interactive menu: show path in each row (~5 lines).
+
+Independent of the envelope+DAG direction in §2.3-§3; ship when
+demand arrives.
+
 ---
 
 ## 3. The model these proposals converge to
@@ -464,6 +528,7 @@ Two separate specs were anticipated, each non-trivial:
 | **Multi-site** | Spatial fan-out, NATS supercluster, per-site Mongo, shared Cassandra, federation Sources, `_site` provenance | **Implemented** as `tools/integration-suite-multisite/`. See `docs/integration-suite-multisite-findings.md` for the chat-app-team-facing findings (F-001 OUTBOX owner, F-002 federation topology). Single-site archived at `tools/archived/integration-suite/`. |
 | **Envelope + DAG + chaos engine** | Replace `cases:` with `input: [DAG]` + `expected: {positive,negative}` + `chaos:` loop; per-iteration fresh state | **Not yet specced** — this doc remains the launchpad |
 | **Seed-grammar extensions (T1, T3)** | Concrete in-grammar fixes for room metadata and arbitrary Mongo doc seeding (see §2.7) | **Surfaced; not shipped.** Ship when a scenario demands either. Cheaper than envelope+DAG; independent of it. |
+| **Scenario organization (§2.8)** | Allow arbitrary subdirectory nesting under `scenarios/drafts/` and `scenarios/approved/`; show path in failure reports + interactive menu | **Surfaced; not shipped.** Half-day implementation, no spec needed. Ship when the flat layout starts hurting. |
 
 **Sequencing — the original "which spec first" question
 is partially answered.** Multi-site shipped first (case-based world
