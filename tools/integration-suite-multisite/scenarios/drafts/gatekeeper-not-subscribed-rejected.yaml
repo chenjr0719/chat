@@ -1,0 +1,77 @@
+scenario: gatekeeper-not-subscribed-rejected
+source: >
+  message-gatekeeper/handler.go:214-222 (processMessage calls store.GetSubscription; an
+  errNotSubscribed match is returned verbatim so the typed errcode survives to the client),
+  message-gatekeeper/store.go:15-16 (errNotSubscribed = errcode.Forbidden("not subscribed",
+  WithReason(MessageNotSubscribed))),
+  message-gatekeeper/store_mongo.go:30-33 (mongo.ErrNoDocuments → errNotSubscribed),
+  pkg/errcode/codes_message.go:6 (MessageNotSubscribed = "not_subscribed"),
+  pkg/errcode/category.go:9 (CodeForbidden = "forbidden")
+status: draft
+tag: negative
+
+# CONTRACT: a verified user who is NOT subscribed to the target room
+# must be rejected with forbidden/not_subscribed, and no canonical event
+# may be published. This is the core admission gate — it is what stops a
+# user posting into a room they don't belong to.
+#
+# alice is verified (can authenticate + fire) but has NO membership in
+# r-general, so GetSubscription returns errNotSubscribed. Content is
+# non-empty and requestId/id are valid, so the subscription check is the
+# ONLY thing that can reject — isolating the gate. requestId is a valid
+# UUID so the reply is routable and we can assert the reason code on it.
+#
+# Surfaces: reply carries forbidden/not_subscribed; gatekeeper logged the
+# forbidden rejection; no canonical event.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m4notsubscribed0rej1
+    content: posting to a room I never joined
+    requestId: 01970a4f-8c2d-7c9a-abcd-e012345678dd
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 (Warmer — first) — the forbidden envelope with the
+  # not_subscribed reason the frontend branches on.
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.01970a4f-8c2d-7c9a-abcd-e012345678dd
+    match:
+      received:
+        - body_json:
+            code: forbidden
+            reason: not_subscribed
+
+  # Surface 2 — gatekeeper consumed and rejected at the subscription gate.
+  - location: logs_tail
+    site: site-a
+    args:
+      container: message-gatekeeper
+    match:
+      msg: request failed
+      code: forbidden
+      reason: not_subscribed
+
+  # Surface 3 — no canonical event: an unsubscribed send must never reach
+  # MESSAGES_CANONICAL.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    not: true
+    match:
+      body_json:
+        message:
+          id: m4notsubscribed0rej1

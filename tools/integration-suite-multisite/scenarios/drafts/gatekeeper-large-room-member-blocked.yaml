@@ -1,0 +1,78 @@
+scenario: gatekeeper-large-room-member-blocked
+source: >
+  message-gatekeeper/handler.go:230-246 (large-room cap: for a top-level send by a sender
+  without bypass, GetRoomMeta(roomID); if meta.UserCount > largeRoomThreshold →
+  errLargeRoomPostRestricted), store.go:20-22 (errLargeRoomPostRestricted = Forbidden(...,
+  WithReason(MessageLargeRoomPostRestricted))), pkg/errcode/codes_message.go:5
+  (MessageLargeRoomPostRestricted = "large_room_post_restricted"),
+  pkg/roommetacache/roommetacache.go:188 (reads rooms.userCount),
+  message-gatekeeper/main.go (LARGE_ROOM_THRESHOLD envDefault 500; infra leaves it unset → 500)
+status: draft
+tag: negative
+
+# CONTRACT: in a room whose userCount exceeds the threshold (500), a
+# plain member's top-level message is rejected with
+# forbidden/large_room_post_restricted, and no canonical event is
+# published. This gate was inert to the suite until SeedRoom.user_count
+# (commit 1a94f64) made userCount seedable.
+#
+# r-busy-block is seeded with 1 real membership but userCount=501 (the override
+# — you can't seed 501 real members, and the gate only reads the cached
+# count). alice is a plain member (no owner/admin role, not a bot), so she
+# has no bypass and the cap applies.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-busy-block
+          name: BusyChannel
+          type: channel
+          user_count: 501
+      memberships:
+        alice:
+          - room: r-busy-block
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-busy-block.site-a.msg.send
+  payload:
+    id: m5largeroomblock0001
+    content: posting to a large room as a plain member
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567907
+  credential: ${alice.credential}
+
+expected:
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.01970a4f-8c2d-7c9a-abcd-e01234567907
+    match:
+      received:
+        - body_json:
+            code: forbidden
+            reason: large_room_post_restricted
+
+  - location: logs_tail
+    site: site-a
+    args:
+      container: message-gatekeeper
+    match:
+      msg: request failed
+      code: forbidden
+      reason: large_room_post_restricted
+
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    not: true
+    match:
+      body_json:
+        message:
+          id: m5largeroomblock0001

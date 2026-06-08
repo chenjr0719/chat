@@ -1,0 +1,151 @@
+scenario: thread-first-reply-happy-path
+source: >
+  message-worker/handler.go:89-101 (thread-reply branch: handleThreadRoomAndSubscriptions then
+  SaveThreadMessage), handler.go:138-147 (CreateThreadRoom on first reply),
+  handler.go:153-214 (handleFirstThreadReply: GetMessageSender → parent-author + replier
+  thread subscriptions, then UpdateParentMessageThreadRoomID stamp),
+  message-worker/store_cassandra.go:322-373 (incrementParentTcount: LWT CAS on both tables;
+  initial nil tcount → 1), store_cassandra.go:377-413 (UpdateParentMessageThreadRoomID IF EXISTS),
+  store_cassandra.go:418-430 (GetMessageSender SELECT sender FROM messages_by_id WHERE message_id),
+  message-gatekeeper/handler.go:187-211 (gatekeeper validates a thread reply's format + pairing
+  and publishes — it does NOT fetch the thread parent; the worker owns parent resolution)
+status: draft
+tag: positive
+
+# CONTRACT (the core "supposed to do" for a first thread reply to a REAL
+# parent): create a thread_rooms doc, subscribe BOTH the parent author and
+# the replier, stamp the parent's thread_room_id, increment its tcount to
+# 1, and persist the reply as a thread message.
+#
+# The parent (authored by bob) is seeded into BOTH messages_by_id (where
+# GetMessageSender reads sender by message_id; stamp + tcount address it by
+# message_id+created_at) and messages_by_room (stamp + tcount also CAS it by
+# room_id+bucket+created_at+message_id). created_at is pinned to
+# 1748736000000 — an exact multiple of the 24h bucket window the infra
+# configures — so bucket equals the same value and the reply payload's
+# threadParentMessageCreatedAt matches the parent PK to the millisecond.
+#
+# Exercises the seed-engine fix at commit 9a1ed26: a literal epoch-millis
+# timestamp (coerceColumnTypes) and a frozen-UDT sender column
+# (normalizeNamedMaps). Before that fix both were rejected at bind.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      - message_id: m0parentmsg000000001
+        created_at: 1748736000000
+        room_id: r-general
+        site_id: site-a
+        msg: "the parent message that starts the thread"
+        sender:
+          id: u-bob
+          account: bob
+          eng_name: bob
+          company_name: bob
+  - table: messages_by_room
+    rows:
+      - room_id: r-general
+        bucket: 1748736000000
+        created_at: 1748736000000
+        message_id: m0parentmsg000000001
+        site_id: site-a
+        msg: "the parent message that starts the thread"
+        sender:
+          id: u-bob
+          account: bob
+          eng_name: bob
+          company_name: bob
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m1threadreply0000001
+    content: first reply in this thread
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567902
+    threadParentMessageId: m0parentmsg000000001
+    threadParentMessageCreatedAt: 1748736000000
+  credential: ${alice.credential}
+
+expected:
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m1threadreply0000001
+          threadParentMessageId: m0parentmsg000000001
+
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_rooms
+      filter:
+        parentMessageId: m0parentmsg000000001
+    match:
+      parentMessageId: m0parentmsg000000001
+    timeout: 10s
+
+  # Parent author (bob) subscribed — requires the seeded sender UDT to have
+  # resolved (GetMessageSender → account=bob).
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0parentmsg000000001
+        userAccount: bob
+    match:
+      userAccount: bob
+    timeout: 10s
+
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0parentmsg000000001
+        userAccount: ${alice.account}
+    match:
+      userAccount: ${alice.account}
+    timeout: 10s
+
+  # Parent tcount incremented to 1 — proves the PK coordination
+  # (created_at + bucket match) and the LWT CAS ran against the seeded row.
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m0parentmsg000000001]
+    match:
+      message_id: m0parentmsg000000001
+      tcount: 1
+    timeout: 10s
+
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m1threadreply0000001]
+    match:
+      message_id: m1threadreply0000001
+      thread_parent_id: m0parentmsg000000001
+    timeout: 10s

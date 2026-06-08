@@ -1,0 +1,105 @@
+scenario: gatekeeper-malformed-requestid-silent-drop
+source: >
+  message-gatekeeper/handler.go:178-180 (processMessage rejects a non-hyphenated-UUID
+  requestId with errcode.BadRequest before any canonical publish),
+  message-gatekeeper/handler.go:136-145 (sendReply no-ops when req.RequestID is empty
+  OR fails idgen.IsValidUUID — so the computed BadRequest is never delivered to the client),
+  message-gatekeeper/handler.go:106-125 (typed *errcode.Error → Ack, no Nak/redelivery),
+  pkg/idgen/idgen.go:183 (IsValidUUID — hyphenated-UUID gate),
+  pkg/errcode/classify.go:40 + pkg/errcode/error.go:6-9 (Classify logs "request failed"
+  with code attr; wire envelope key for the category is "code")
+status: draft
+tag: negative
+
+# WEAK SPOT W1 — silent drop on a present-but-malformed requestId.
+#
+# A client sends a well-formed msg.send (valid subject, valid 20-char
+# message id, non-empty content, subscribed sender) but puts a
+# present-but-malformed requestId in the payload ("abc123" — not a
+# hyphenated UUID). The gatekeeper computes a BadRequest, but
+# sendReply's own guard (req.RequestID must pass idgen.IsValidUUID,
+# the same predicate that just failed) makes the reply UNROUTABLE, so
+# it is silently dropped: the client gets NOTHING back and nothing is
+# published downstream.
+#
+# Three surfaces prove the silent drop is real and not a trivial pass:
+#   A  no reply ever reaches the client       (nats_subscribe + not)
+#   B  the gatekeeper DID consume + reject it  (logs_tail, positive)
+#   C  no canonical event is published         (jetstream_consume + not)
+# B is load-bearing: without it, C ("no canonical") could pass simply
+# because the message was never consumed. B confirms the gatekeeper
+# processed the message and chose to reject it.
+#
+# requestId is hardcoded malformed (not $auto) and the nats_subscribe
+# entry is declared FIRST per AUTHORING.md "async-reply assertions".
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m1badreqid000drop01a
+    content: malformed requestId should be silently dropped
+    requestId: abc123
+
+  credential: ${alice.credential}
+
+expected:
+  # Surface A (Warmer — declared first) — the BadRequest the gatekeeper
+  # computed is NEVER delivered to the client. We subscribe to ALL of
+  # alice's response subjects (a buggy reply would land on
+  # chat.user.<alice>.response.abc123, caught by the `>` wildcard) and
+  # assert via Consistently().ShouldNot() that no error envelope arrives.
+  # Source: message-gatekeeper/handler.go:136-145 (sendReply early return).
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.>
+    not: true
+    match:
+      received:
+        - body_json:
+            code: bad_request
+
+  # Surface B (positive) — proof the gatekeeper consumed the message and
+  # rejected it, so Surface C is meaningful. errcode.Classify emits a
+  # single "request failed" line at Info level for 4xx, carrying the
+  # category as the "code" attr.
+  # Source: pkg/errcode/classify.go:40 (slog "request failed"),
+  #         pkg/errcode/classify.go:44-49 (4xx → Info),
+  #         message-gatekeeper/handler.go:178-180 (the BadRequest).
+  - location: logs_tail
+    site: site-a
+    args:
+      container: message-gatekeeper
+    match:
+      msg: request failed
+      code: bad_request
+
+  # Surface C — no canonical MessageEvent is published for this message
+  # id. processMessage returns before the publish call at
+  # message-gatekeeper/handler.go:301.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    not: true
+    match:
+      body_json:
+        message:
+          id: m1badreqid000drop01a

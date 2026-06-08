@@ -1,0 +1,108 @@
+scenario: gatekeeper-quote-nonexistent-parent-drops-message
+source: >
+  message-gatekeeper/handler.go:257-260 (processMessage calls resolveQuoteSnapshot and
+  returns its error before publishing the canonical event),
+  message-gatekeeper/handler.go:312-340 (resolveQuoteSnapshot: a typed *errcode.Error from
+  the fetcher is propagated verbatim — a real NotFound stays NotFound),
+  message-gatekeeper/fetcher_history.go:43-64 (FetchQuotedParent issues a NATS request to
+  history-service MsgGet and returns the parsed errcode envelope when present),
+  history-service/internal/service/utils.go:44-58 (findMessage → errcode.NotFound("message not found")
+  when the row is absent), history-service/internal/service/service.go:137 (GetMessageByID
+  registered at subject.MsgGetPattern), pkg/subject/subject.go:51 (MsgGet subject),
+  pkg/errcode/error.go:6-9 + pkg/errcode/error_test.go:47-48 (wire envelope: {"code":"not_found",...}),
+  message-gatekeeper/handler.go:106-125 (typed *errcode.Error → reply + Ack, message dropped)
+status: draft
+tag: negative
+
+# WEAK SPOT W2 — one bad quote drops the entire message.
+#
+# A subscribed sender posts a valid message that quotes a parent which
+# does not exist. The gatekeeper synchronously fetches the quoted
+# parent from history-service (NATS request/reply); history-service's
+# findMessage returns errcode.NotFound for the missing row;
+# resolveQuoteSnapshot propagates the typed NotFound verbatim; and
+# HandleJetStreamMsg replies NotFound + Acks. Net effect: the WHOLE
+# message is permanently dropped (no canonical event, no Cassandra
+# row) because its quote target was missing — not just the quote.
+#
+# Surfaces:
+#   A  client receives a NotFound reply        (nats_subscribe, positive)
+#   B  no canonical event is published          (jetstream_consume + not)
+#   C  no row is persisted to messages_by_id     (cassandra_select + not)
+#
+# Requires history-service running (USE_INFRA stack). The quoted
+# parent id is a valid-FORMAT 20-char base62 id that was never written,
+# so history-service genuinely returns NotFound (not a timeout). alice
+# is seeded as a room member so the gatekeeper's subscription check and
+# history-service's access-window check both pass, isolating the
+# rejection to the missing quote target.
+#
+# requestId is a valid hyphenated UUID here (unlike the silent-drop
+# scenario) so the reply IS routable — that is the point: a real 404
+# does reach the client, whereas a malformed requestId does not.
+# nats_subscribe is declared first per AUTHORING.md.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m2quotemiss000drop1a
+    content: quoting a parent that does not exist
+    requestId: 01970a4f-8c2d-7c9a-abcd-e012345678bb
+    quotedParentMessageId: m0nonexistentparent1
+
+  credential: ${alice.credential}
+
+expected:
+  # Surface A (Warmer — declared first) — the client receives the
+  # propagated NotFound envelope on its response subject. The reply IS
+  # routable here because requestId is a valid hyphenated UUID.
+  # Source: message-gatekeeper/handler.go:312-326 (resolveQuoteSnapshot
+  # returns the typed NotFound), :114 (sendReply marshals the envelope).
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.01970a4f-8c2d-7c9a-abcd-e012345678bb
+    match:
+      received:
+        - body_json:
+            code: not_found
+
+  # Surface B — no canonical event is published: processMessage returns
+  # at handler.go:259 before the publish at handler.go:301.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    not: true
+    match:
+      body_json:
+        message:
+          id: m2quotemiss000drop1a
+
+  # Surface C — no row in messages_by_id: message-worker never sees a
+  # canonical event, so nothing is persisted. SELECT JSON per
+  # SCENARIO-REFERENCE §7.4 (poller scans a single JSON column).
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m2quotemiss000drop1a]
+    not: true
+    match:
+      message_id: m2quotemiss000drop1a

@@ -1,0 +1,113 @@
+scenario: thread-reply-to-nonexistent-parent-creates-orphan
+source: >
+  message-gatekeeper/handler.go:187-211 (processMessage validates threadParentMessageId FORMAT
+  and the createdAt PAIRING only — it never verifies the parent message EXISTS before publishing
+  the canonical event), message-worker/handler.go:118-147 (handleThreadRoomAndSubscriptions
+  CreateThreadRoom succeeds regardless of parent existence), message-worker/handler.go:153-164
+  (handleFirstThreadReply: GetMessageSender → errMessageNotFound → logs warn + early-returns,
+  skipping BOTH parent and replier subscriptions), message-worker/handler.go:99-101
+  (SaveThreadMessage still persists the reply), message-worker/store_cassandra.go:322-325
+  (incrementParentTcount no-ops; parent row absent), message-worker/store_cassandra.go:377-413
+  (UpdateParentMessageThreadRoomID IF EXISTS no-ops; not reached anyway via the early return)
+status: draft
+tag: positive
+
+# CANDIDATE FINDING (not a confirmed bug — documents current behavior for
+# a design ruling): the gatekeeper accepts a thread reply whose parent
+# message does not exist. It checks the parent id's FORMAT and that
+# createdAt is paired, but never checks the parent is real. The worker
+# then builds an ORPHANED thread: a thread_rooms doc whose parentMessageId
+# points at nothing, the reply persisted under it, and — because
+# GetMessageSender(parent) returns errMessageNotFound and the handler
+# early-returns — NO thread_subscriptions at all (not even for the
+# replier). The reply is Ack'd; nothing errors.
+#
+# Whether this SHOULD be rejected is a chat-app design call. This scenario
+# documents that it currently is NOT rejected. If the team rules it must
+# reject, flip this to tag:negative asserting no canonical + an error
+# reply, and it becomes the regression test for the fix.
+#
+# Surfaces (the orphan signature):
+#   1  canonical event published — gatekeeper accepted the reply
+#   2  thread_rooms doc created with the dangling parentMessageId
+#   3  the reply row persisted in Cassandra as a thread reply
+#   4  NO thread_subscriptions exist for that parent (orphan: no followers)
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m7orphanthreadreply1
+    content: replying into a thread whose parent never existed
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567900
+    # valid 20-char base62 format, but no such message was ever written
+    threadParentMessageId: m0nonexistparent0001
+    # paired (required) — a server-relative millis timestamp
+    threadParentMessageCreatedAt: ${now}
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 — gatekeeper accepted and published: the canonical event
+  # carries the dangling thread parent. This is the validation gap.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m7orphanthreadreply1
+          threadParentMessageId: m0nonexistparent0001
+
+  # Surface 2 — the worker created an orphan thread room pointing at the
+  # non-existent parent.
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_rooms
+      filter:
+        parentMessageId: m0nonexistparent0001
+    match:
+      parentMessageId: m0nonexistparent0001
+    timeout: 10s
+
+  # Surface 3 — the reply itself was persisted as a thread reply
+  # (thread_parent_id stamped on its own row).
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m7orphanthreadreply1]
+    match:
+      message_id: m7orphanthreadreply1
+      thread_parent_id: m0nonexistparent0001
+    timeout: 10s
+
+  # Surface 4 — the orphan signature: NO thread_subscriptions were created
+  # for this parent (GetMessageSender errMessageNotFound → early return
+  # skips both parent and replier subscriptions).
+  - location: mongo_find
+    site: site-a
+    args:
+      collection: thread_subscriptions
+      filter:
+        parentMessageId: m0nonexistparent0001
+    not: true
+    match:
+      parentMessageId: m0nonexistparent0001

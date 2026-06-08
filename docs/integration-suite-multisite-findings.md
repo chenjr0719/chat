@@ -124,6 +124,120 @@ actually do.
 
 ---
 
+## F-004 — gatekeeper accepts thread replies to non-existent parents (orphaned threads)
+
+**Layer:** chat-app code.
+
+**Status:** observed — chat-app team action pending.
+
+`message-gatekeeper`'s `processMessage` validates a thread reply's
+`threadParentMessageId` for FORMAT only (`idgen.IsValidMessageID`,
+handler.go:191-193) and that `threadParentMessageCreatedAt` is paired
+with it (handler.go:209-211). It never verifies the parent message
+actually exists before publishing the canonical event. A client can
+send a thread reply whose `threadParentMessageId` is any syntactically
+valid 20-char base62 string pointing at nothing.
+
+`message-worker` then builds an **orphaned thread**: `CreateThreadRoom`
+succeeds, the reply is persisted, but `handleFirstThreadReply`'s
+`GetMessageSender(parent)` returns `errMessageNotFound` and
+early-returns (handler.go:155-162) — skipping BOTH the parent-author
+and the replier `thread_subscriptions`. The reply is Ack'd; nothing
+errors.
+
+Demonstrated by
+`scenarios/drafts/thread-reply-to-nonexistent-parent-creates-orphan.yaml`
+(green): canonical published, orphan `thread_rooms` doc created, reply
+persisted with `thread_parent_id` set, ZERO `thread_subscriptions`.
+
+Decision the team owns: should a thread reply whose parent does not
+exist be rejected (gatekeeper verifies existence, or worker refuses to
+create a room for a missing parent), or is silently building the orphan
+acceptable? Consequence today: a client can manufacture unbounded
+orphaned `thread_rooms` (pollution/abuse), replies unreachable via a
+non-existent parent, and the orphan thread has no subscribers.
+
+---
+
+## F-005 — malformed (present-but-non-UUID) requestId is silently dropped
+
+**Layer:** chat-app code.
+
+**Status:** observed — chat-app team action pending.
+
+When a `msg.send` payload carries a `requestId` that is present but not
+a valid hyphenated UUID, `processMessage` rejects it with
+`errcode.BadRequest` (handler.go:178-180) — but `sendReply` then
+**no-ops**, because its guard requires `req.RequestID` to pass
+`idgen.IsValidUUID` (handler.go:143-145), the very predicate that just
+failed. The reply subject `chat.user.{account}.response.{requestId}`
+would be unroutable, so nothing is published. The client receives
+NOTHING — no success, no error — and the send is dropped.
+
+Contrast: an EMPTY-content rejection with a *valid* requestId IS
+delivered (`gatekeeper-empty-content-rejected.yaml`). The differentiator
+is solely requestId routability, not the rejection class.
+
+Demonstrated by
+`scenarios/drafts/gatekeeper-malformed-requestid-silent-drop.yaml`
+(green): no reply reaches the client, gatekeeper logged the bad_request
+rejection, no canonical event published.
+
+Decision the team owns: is a silent drop on a malformed requestId
+acceptable (client must time out), or should the client be told?
+
+---
+
+## F-006 — a missing quoted-parent drops the entire message, not just the quote
+
+**Layer:** chat-app code.
+
+**Status:** observed — chat-app team action pending.
+
+When a `msg.send` quotes a parent (`quotedParentMessageId`) that does
+not exist, `resolveQuoteSnapshot` propagates history-service's typed
+`NotFound` verbatim (handler.go:312-326), and `processMessage` returns
+it before publishing — the WHOLE message is dropped (client gets a
+`not_found` reply, no canonical event / Cassandra row).
+
+This **contradicts the `ParentMessageFetcher` interface doc**
+(store.go:33-34): "the handler soft-fails on every error and ships the
+message without the quote." The implementation hard-fails the entire
+send on NotFound. Code and stated contract diverge — one side is wrong.
+
+Demonstrated by
+`scenarios/drafts/gatekeeper-quote-nonexistent-parent-drops-message.yaml`
+(green): reply `not_found`, no canonical, no `messages_by_id` row.
+(Positive counterpart `gatekeeper-quote-happy-path-embeds-snapshot.yaml`
+confirms the success path embeds + persists the snapshot.)
+
+Decision the team owns: should a bad quote target drop the whole message
+(current behavior) or soft-fail as the doc describes? This is a
+code-vs-contract mismatch.
+
+---
+
+## F-007 — whitespace-only message content is accepted (no trim)
+
+**Layer:** chat-app code.
+
+**Status:** observed — chat-app team action pending.
+
+`message-gatekeeper`'s non-empty content gate is an exact empty-string
+check — `if req.Content == ""` (handler.go:196-198) — with no trimming.
+A whitespace-only body ("   ", "\n", a tab) passes validation, is
+published, and persisted verbatim. The only other content gate is the
+20KB size cap. A user can post blank-looking messages at will.
+
+Demonstrated by
+`scenarios/drafts/gatekeeper-whitespace-only-content-accepted.yaml`
+(green): a "   " send produces a canonical event and a persisted row
+with msg="   ".
+
+Decision the team owns: trim before the non-empty check (reject
+whitespace-only), or is it intentionally allowed?
+---
+
 ## F-008 — `publishThreadSubOutboxIfRemote` has three observationally-indistinguishable exit paths
 
 **Layer:** chat-app code (observability).

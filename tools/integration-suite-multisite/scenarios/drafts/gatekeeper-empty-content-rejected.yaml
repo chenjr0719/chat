@@ -1,0 +1,79 @@
+scenario: gatekeeper-empty-content-rejected
+source: >
+  message-gatekeeper/handler.go:196-198 (processMessage rejects empty content with
+  errcode.BadRequest("content must not be empty") before any canonical publish),
+  message-gatekeeper/handler.go:136-150 (sendReply delivers the envelope — requestId is a
+  valid hyphenated UUID here, so unlike the malformed-requestId case the reply IS routable),
+  pkg/errcode/classify.go:40 (Classify logs one "request failed" line; code attr = category),
+  pkg/errcode/error.go:6-9 (wire envelope: code/reason/error/metadata)
+status: draft
+tag: negative
+
+# CONTRACT: gatekeeper must reject empty content and must NOT publish a
+# canonical event. The deliberate contrast with
+# gatekeeper-malformed-requestid-silent-drop: there the requestId was
+# malformed so the reply was unroutable (silent drop). HERE the requestId
+# is a valid hyphenated UUID, so the SAME rejection class (BadRequest) is
+# actually delivered to the client. Same gate, opposite reply outcome —
+# the difference is solely requestId routability.
+#
+# Three surfaces: reply delivered (nats_subscribe), gatekeeper processed
+# and rejected (logs_tail), no canonical leaked (jetstream_consume + not).
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m3emptycontent00rej1
+    content: ""
+    requestId: 01970a4f-8c2d-7c9a-abcd-e012345678cc
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 (Warmer — first) — the BadRequest IS delivered this time.
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.01970a4f-8c2d-7c9a-abcd-e012345678cc
+    match:
+      received:
+        - body_json:
+            code: bad_request
+
+  # Surface 2 — gatekeeper consumed and rejected (proves Surface 3 is
+  # meaningful, not a never-consumed trivial pass).
+  - location: logs_tail
+    site: site-a
+    args:
+      container: message-gatekeeper
+    match:
+      msg: request failed
+      code: bad_request
+
+  # Surface 3 — no canonical event: rejection precedes the publish at
+  # message-gatekeeper/handler.go:301.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    not: true
+    match:
+      body_json:
+        message:
+          id: m3emptycontent00rej1

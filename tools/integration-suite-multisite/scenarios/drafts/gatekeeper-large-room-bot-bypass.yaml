@@ -1,0 +1,56 @@
+scenario: gatekeeper-large-room-bot-bypass
+source: >
+  message-gatekeeper/handler.go:348-355 (canBypassLargeRoomCap falls through to
+  isBot(sub.User.Account)), message-gatekeeper/helper.go:9-13 (isBot: account matches
+  `\.bot$|^p_`), handler.go:230-246 (cap skipped when bypass)
+status: draft
+tag: positive
+
+# CONTRACT: a bot account bypasses the large-room cap even as a PLAIN
+# member (no owner/admin role). The bot is detected purely by account
+# name. We use a `p_`-prefixed account (the `^p_` branch of the bot
+# regex) because a scenario alias cannot contain the dot the `.bot$`
+# branch needs.
+#
+# p_botuser is a plain member of r-busy-bot (userCount=501); the cap would
+# block a normal member here (see gatekeeper-large-room-member-blocked),
+# but isBot short-circuits the bypass so the send is published.
+
+sites:
+  site-a:
+    seed:
+      users:
+        p_botuser: { verified: true }
+      rooms:
+        - id: r-busy-bot
+          name: BusyChannel
+          type: channel
+          user_count: 501
+      memberships:
+        p_botuser:
+          - room: r-busy-bot
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${p_botuser.account}.room.r-busy-bot.site-a.msg.send
+  payload:
+    id: m7largeroombot000001
+    content: bot account posting to a large room is allowed
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567909
+  credential: ${p_botuser.credential}
+
+expected:
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m7largeroombot000001
+          roomId: r-busy-bot
+          userAccount: ${p_botuser.account}

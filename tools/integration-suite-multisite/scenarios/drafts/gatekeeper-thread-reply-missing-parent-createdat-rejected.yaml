@@ -1,0 +1,78 @@
+scenario: gatekeeper-thread-reply-missing-parent-createdat-rejected
+source: >
+  message-gatekeeper/handler.go:209-211 (processMessage rejects a thread reply that sets
+  threadParentMessageId but omits threadParentMessageCreatedAt with errcode.BadRequest
+  "threadParentMessageCreatedAt is required when threadParentMessageId is set" — the pairing
+  gate runs before GetSubscription at :214),
+  pkg/model (SendMessageRequest.ThreadParentMessageCreatedAt is *int64, omitempty),
+  pkg/errcode/classify.go:40 (Classify logs one "request failed" line)
+status: draft
+tag: negative
+
+# CONTRACT: thread-parent fields are paired. A reply that names a thread
+# parent (threadParentMessageId) but omits its createdAt is rejected
+# BadRequest before any canonical publish. This pairing is load-bearing
+# downstream: the worker needs threadParentMessageCreatedAt to address the
+# parent's Cassandra row for the thread_room_id stamp + tcount increment
+# (message-worker/store_cassandra.go incrementParentTcount /
+# UpdateParentMessageThreadRoomID both require the full parent PK). The
+# gatekeeper guard is what prevents an un-stampable reply from reaching
+# the worker via the normal send path.
+#
+# threadParentMessageCreatedAt is simply omitted from the payload (the
+# field is *int64 omitempty → nil). requestId is valid so the reply is
+# routable.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m6threadnocreatedat1
+    content: thread reply with a parent id but no parent createdAt
+    requestId: 01970a4f-8c2d-7c9a-abcd-e012345678ff
+    threadParentMessageId: m0threadparent000001
+  credential: ${alice.credential}
+
+expected:
+  - location: nats_subscribe
+    site: site-a
+    args:
+      subject: chat.user.${alice.account}.response.01970a4f-8c2d-7c9a-abcd-e012345678ff
+    match:
+      received:
+        - body_json:
+            code: bad_request
+
+  - location: logs_tail
+    site: site-a
+    args:
+      container: message-gatekeeper
+    match:
+      msg: request failed
+      code: bad_request
+
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    not: true
+    match:
+      body_json:
+        message:
+          id: m6threadnocreatedat1

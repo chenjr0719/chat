@@ -1,0 +1,59 @@
+scenario: gatekeeper-large-room-owner-bypass
+source: >
+  message-gatekeeper/handler.go:230-246 (cap check is skipped when canBypassLargeRoomCap),
+  handler.go:348-355 (canBypassLargeRoomCap: true for RoleOwner or RoleAdmin — and the bypass
+  skips the GetRoomMeta fetch entirely), pkg/model/subscription.go:14 (RoleOwner = "owner")
+status: draft
+tag: positive
+
+# CONTRACT: an owner is exempt from the large-room cap. Same room shape as
+# gatekeeper-large-room-member-blocked (userCount=501) but alice holds the
+# owner role, so canBypassLargeRoomCap short-circuits and the send is
+# published + persisted normally.
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-busy-owner
+          name: BusyChannel
+          type: channel
+          user_count: 501
+      memberships:
+        alice:
+          - room: r-busy-owner
+            roles: [owner]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-busy-owner.site-a.msg.send
+  payload:
+    id: m6largeroomowner0001
+    content: owner posting to a large room is allowed
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567908
+  credential: ${alice.credential}
+
+expected:
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m6largeroomowner0001
+          roomId: r-busy-owner
+
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m6largeroomowner0001]
+    match:
+      message_id: m6largeroomowner0001
+      room_id: r-busy-owner
+    timeout: 10s

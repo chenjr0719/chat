@@ -1,0 +1,78 @@
+scenario: message-worker-mentions-persisted
+source: >
+  message-worker/handler.go:63-67 (processMessage calls mention.Resolve on the message content
+  and sets evt.Message.Mentions before persisting — mentions are resolved by the WORKER, not the
+  gatekeeper), message-worker/store_cassandra.go:41-55 (toMentionSet → cassParticipant set),
+  message-worker/store_cassandra.go:86-105 (SaveMessage binds mentions into messages_by_id +
+  messages_by_room), pkg/mention/mention.go:15 (mention regex: @account at start/after-space),
+  internal/runtime/sandbox.go:403-435 (seeded users get a mongo profile doc resolvable by
+  FindUsersByAccounts: _id=u-<alias>, account=<alias>)
+status: draft
+tag: positive
+
+# CONTRACT: the worker resolves @mentions from message content and
+# persists them onto the Cassandra row. Mention resolution is the
+# worker's job, NOT the gatekeeper's — the canonical event the gatekeeper
+# publishes carries the raw content with mentions UNresolved; the worker
+# runs mention.Resolve and writes the enriched participant set.
+#
+# So we deliberately assert mentions on the CASSANDRA row (worker output),
+# not on the canonical event (gatekeeper output). bob is seeded only as a
+# profile (he doesn't fire anything) so FindUsersByAccounts resolves @bob.
+#
+# Surfaces:
+#   1  canonical event exists (gatekeeper validated + published the send)
+#   2  messages_by_id row carries the resolved @bob mention (worker path)
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+        bob: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m5mentionbob00persi1
+    content: "@bob hello from the suite"
+    requestId: 01970a4f-8c2d-7c9a-abcd-e012345678ee
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 — canonical event published by the gatekeeper. Note we do
+  # NOT assert mentions here: the gatekeeper does not resolve them.
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m5mentionbob00persi1
+          content: "@bob hello from the suite"
+
+  # Surface 2 — the worker resolved @bob and persisted the participant
+  # into the mentions set. ROSM list match: the observed mentions set
+  # must contain an element with account=bob. SELECT JSON per §7.4.
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m5mentionbob00persi1]
+    match:
+      message_id: m5mentionbob00persi1
+      mentions:
+        - account: bob
+    timeout: 10s

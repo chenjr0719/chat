@@ -1,0 +1,97 @@
+scenario: gatekeeper-quote-happy-path-embeds-snapshot
+source: >
+  message-gatekeeper/handler.go:257-260 (processMessage calls resolveQuoteSnapshot and embeds
+  the returned snapshot on the canonical message), handler.go:312-339 (resolveQuoteSnapshot:
+  same-context parents pass — main-room quoting main-room, snap.ThreadParentID "" == new thread
+  id ""), message-gatekeeper/fetcher_history.go:71-81 (projects history's cassandra.Message into
+  a QuotedParentMessage snapshot), pkg/model/message.go:36 (Message.QuotedParentMessage →
+  json "quotedParentMessage"), pkg/model/cassandra (QuotedParentMessage: messageId/msg, cql
+  message_id/msg), message-worker/store_cassandra.go:86-105 (SaveMessage persists
+  quoted_parent_message into messages_by_id)
+status: draft
+tag: positive
+
+# CONTRACT (positive counterpart to F-006): a main-room message that
+# quotes a REAL main-room parent must succeed — the gatekeeper fetches the
+# parent from history-service, the same-conversation-context check passes
+# (parent thread id "" == new message thread id ""), the snapshot is
+# embedded on the canonical event, and the worker persists it into the
+# message's quoted_parent_message column.
+#
+# The quoted parent is seeded into messages_by_id as a MAIN-room message
+# (no thread_parent_id). No sender UDT is seeded (the tool can't express
+# UDT columns) — the snapshot's sender is simply empty, which does not
+# affect the messageId/msg embedding under test. alice is a member, so
+# the gatekeeper's internal history fetch resolves the parent (no access
+# window on a freshly-seeded membership).
+#
+# Surfaces:
+#   1  canonical event carries the embedded quote snapshot (messageId + msg)
+#   2  worker persisted quoted_parent_message onto the message's Cassandra row
+
+sites:
+  site-a:
+    seed:
+      users:
+        alice: { verified: true }
+      rooms:
+        - id: r-general
+          name: General
+          type: channel
+      memberships:
+        alice:
+          - room: r-general
+            roles: [member]
+
+cassandra_data:
+  - table: messages_by_id
+    rows:
+      # A main-room message (no thread_parent_id) — quoting it from another
+      # main-room message is same-context and must succeed.
+      - message_id: m0quotedmainmsg00001
+        created_at: ${now - 1h}
+        room_id: r-general
+        site_id: site-a
+        msg: "the original message being quoted"
+
+input:
+  site: site-a
+  verb: jetstream_publish
+  subject: chat.user.${alice.account}.room.r-general.site-a.msg.send
+  payload:
+    id: m2quotehappymain0001
+    content: quoting the original main-room message
+    requestId: 01970a4f-8c2d-7c9a-abcd-e01234567903
+    quotedParentMessageId: m0quotedmainmsg00001
+    # no threadParentMessageId — main-room send, same context as the parent
+  credential: ${alice.credential}
+
+expected:
+  # Surface 1 — the gatekeeper embedded the quote snapshot on the canonical
+  # event (messageId + msg projected from the fetched parent).
+  - location: jetstream_consume
+    site: site-a
+    args:
+      stream: MESSAGES_CANONICAL_site-a
+      filter_subject: chat.msg.canonical.site-a.created
+    match:
+      body_json:
+        event: created
+        message:
+          id: m2quotehappymain0001
+          quotedParentMessage:
+            messageId: m0quotedmainmsg00001
+            msg: "the original message being quoted"
+
+  # Surface 2 — the worker persisted the quoted_parent_message onto the new
+  # message's row (UDT column, snake_case keys under SELECT JSON).
+  - location: cassandra_select
+    args:
+      query: "SELECT JSON * FROM messages_by_id WHERE message_id = ?"
+      params: [m2quotehappymain0001]
+    match:
+      message_id: m2quotehappymain0001
+      quoted_parent_message:
+        message_id: m0quotedmainmsg00001
+        msg: "the original message being quoted"
+    timeout: 10s
