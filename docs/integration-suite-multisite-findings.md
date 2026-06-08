@@ -91,3 +91,35 @@ Decisions the chat-app team owns:
   stack.
 
 ---
+
+## F-003 — `message-worker/README.md` describes a stream layout that no longer exists
+
+**Layer:** chat-app code (doc only).
+
+**Status:** observed — chat-app team action pending.
+
+`message-worker/README.md` describes the service as consuming the
+`MESSAGES` stream and publishing to a `FANOUT` stream. The actual
+service (verified against `message-worker/main.go` +
+`store_cassandra.go`) consumes from `MESSAGES_CANONICAL_<site>` —
+the canonical stream split that landed when `message-gatekeeper`
+was introduced as the validation gate ahead of message-worker — and
+writes to Cassandra (`messages_by_id` + `messages_by_room` via
+UnloggedBatch). No publishes to any `FANOUT` stream; that name
+isn't declared anywhere in `pkg/stream/stream.go`.
+
+The doc drift made authoring the
+`message-pipeline-send-and-persist` scenario harder — an author
+reading the README first would build the wrong subject/stream
+graph in their head and either fire on a non-existent stream or
+look for non-existent canonical events.
+
+The chat-app team owns the doc. The fix: update
+`message-worker/README.md` to describe the real consume
+(`MESSAGES_CANONICAL_<site>` → `chat.msg.canonical.<site>.created`)
+and write (`messages_by_id` + `messages_by_room`) shape, matching
+what `message-gatekeeper/handler.go:167-330` (publishes the
+canonical) and `message-worker/handler.go` (consumes + persists)
+actually do.
+
+---

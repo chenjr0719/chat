@@ -151,10 +151,20 @@ fire. Closed enum for `type`. DM rooms are limited to two members (see
 ```yaml
 seed:
   memberships:
-    - room: r-eng       # must reference a room in seed.rooms
-      user: alice       # must reference a user in seed.users (same site)
-      role: owner       # "owner" or "member"
+    alice:                  # user alias (must be declared in seed.users)
+      - room: r-eng         # must reference a room in seed.rooms
+        roles: [owner]      # list of "owner" / "admin" / "member"; defaults to [member]
+    bob: [r-eng]            # shorthand: list of room IDs → all default to [member]
 ```
+
+The grammar is `map[<user-alias>] → list of memberships`. Each
+membership entry is either:
+- An object `{room: <id>, roles: [<role>...]}` for explicit roles, or
+- A bare room-ID string (no role list — defaults to `[member]`).
+
+Both forms can coexist in one scenario (see
+`scenarios/drafts/cross-site-room-rename-federation.yaml` for a
+worked example using both shapes).
 
 Memberships insert subscription rows into the site's Mongo
 `subscriptions` collection.
@@ -171,7 +181,8 @@ cassandra_data:
         created_at: ${now - 2m}
         bucket: ${bucket(created_at)}
         message_id: m-1
-        body_text: "hello"
+        msg: "hello"
+        site_id: site-a
 ```
 
 This block is at scenario top level, not under any site. Cassandra is
@@ -179,7 +190,10 @@ a shared single-cluster deployment.
 
 - `table` — CQL table name (must exist in the keyspace).
 - `rows` — list of column→value maps. Column names must match the CQL
-  schema exactly.
+  schema exactly — for `messages_by_room` and `messages_by_id` the
+  text body column is `msg` (NOT `body_text`); see
+  `docs/cassandra_message_model.md` and
+  `pkg/model/cassandra/message.go` for the full schema.
 - `${now ± d}` — relative timestamp. Supported units: `ms`, `s`, `m`,
   `h`. Resolves to Unix milliseconds relative to `Sandbox.StartTime`.
 - `${bucket(<col>)}` — auto-computes the message-bucket partition key
@@ -350,6 +364,17 @@ The synchronous reply payload from the `nats_request` verb. Injected
 by the dispatcher into the `ReplyReader` buffer. `site:` is forbidden.
 `args:` is not used.
 
+**Pitfall: `reply` only fires for `nats_request`.** If your scenario's
+`input.verb` is `jetstream_publish` (e.g. the message-send pipeline,
+which publishes to `MESSAGES_<site>` and gets an async response on
+`chat.user.<acct>.response.<requestId>`), the ReplyReader buffer
+stays empty and `reply` assertions silently never match. For
+async-response paths, use a `nats_subscribe` Warmer on the response
+subject instead — see
+`scenarios/drafts/message-pipeline-send-and-persist.yaml` Surface 1
+for the worked pattern (hardcode the `requestId` in the payload so
+the subscribe filter is known pre-fire).
+
 ### 7.3 `mongo_find`
 
 ```yaml
@@ -380,13 +405,21 @@ observe events that occurred after `Sandbox.StartTime`.
 ```yaml
 - location: cassandra_select
   args:
-    query: "SELECT * FROM messages_by_room WHERE room_id = ? AND bucket = ?"
+    query: "SELECT JSON * FROM messages_by_room WHERE room_id = ? AND bucket = ?"
     params: ["r-eng", 0]
   match:
-    body_text: "hello"
+    msg: "hello"
+    room_id: "r-eng"
 ```
 
 Queries the shared Cassandra cluster. `site:` is forbidden.
+
+The poller scans a SINGLE JSON column per row (`SELECT JSON ...`).
+Plain `SELECT *` returns multi-column rows that the scanner can't
+unpack — always use `SELECT JSON *` (or another JSON-yielding shape).
+Match keys are CQL column names in snake_case (`msg`, `room_id`,
+`message_id`), NOT the camelCase JSON tags from the Go Message
+struct.
 
 | Arg | Required | Notes |
 |-----|----------|-------|

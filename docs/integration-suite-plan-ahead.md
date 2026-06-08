@@ -112,6 +112,14 @@ Some flows are genuinely sequential ("alice creates room → bob joins
 expresses this poorly (cases-as-narrative shares the state footgun)
 and the single-`base_input` model doesn't express it at all.
 
+*Concretely, the present-day symptom in multi-site is "one fire per
+scenario" — `input:` is a single struct, not a list. This blocks
+JetStream redelivery / Nak-retry assertions, canonical Nats-Msg-Id
+dedup tests, message-gatekeeper double-send dedup, `tcount` CAS
+concurrency, and subsequent-thread-reply scenarios. The DAG model
+below is the structural answer; see §2.7 for the smaller seed-grammar
+gaps surfaced alongside this one during authoring.*
+
 **Discussion conclusion:** input should be a **DAG of tasks**
 (Airflow-style), not a single fire. Each task is one verb + subject
 + payload + credential, with explicit dependencies:
@@ -257,6 +265,62 @@ The last row is the property: "even when send precedes join
 gracefully refuses — never corrupts." The single UNDEFINED is the
 real bug.
 
+### 2.7 Seed-grammar gaps surfaced during authoring
+
+Two concrete gaps where current seed primitives don't reach what
+production code reads, blocking specific scenario classes today.
+Smaller-scope than the DAG/envelope direction above — concrete
+extensions that don't pre-judge the bigger spec, and could ship
+independently when a scenario demands either.
+
+**T1 — room metadata not addressable in seed**
+
+`SeedRoom` is `{ID, Name, Type, CreatedAt}` only
+(`internal/scenario/types.go:76-81`). The message-gatekeeper
+large-room gate reads `rooms.userCount` via
+`roommetacache.FetchFromMongo`
+(`message-gatekeeper/handler.go:232-236`). With no seedable value,
+the cached read always sees 0; the gate is never tripped; the
+entire large-room post-restriction code path is unreachable from
+any scenario.
+
+*Fix shape:* extend `SeedRoom` to
+`{ID, Name, Type, CreatedAt, UserCount}`. Engine writes the value
+into Mongo on insert. One struct field + one bson serialize;
+trivial extension. If other fields surface (e.g.
+`restricted`, `externalAccess`) over time, extend the same way.
+
+**T3 — Mongo seed only addresses three collections**
+
+`SiteSeed` knows `users` / `rooms` / `memberships` only
+(`internal/scenario/types.go:47-52`). A scenario that needs a
+pre-existing `thread_rooms` doc, a `thread_subscriptions` entry,
+or an arbitrary field outside the three known shapes has no
+declarative path. Forces `pre_fire_scripts` (mongosh) for what
+should arguably be in-grammar — and pre_fire_scripts loses
+substitution + validator awareness.
+
+*Fix shape:* parallel `mongo_data:` top-level block, structurally
+the same shape as `cassandra_data:`:
+
+```yaml
+mongo_data:
+  - site: site-a
+    collection: thread_rooms
+    docs:
+      - _id: tr-1
+        roomId: r-shared
+        parentMsgId: m-abc
+        createdAt: ${now - 5m}
+```
+
+Site-scoped (Mongo is per-site, unlike shared Cassandra).
+Substitution + `${now ± d}` tokens apply.
+
+**Note on T2 (one fire per scenario).** That's the present-day
+symptom of §2.3 — the DAG-of-tasks proposal is the structural
+answer. Not duplicated here.
+
 ---
 
 ## 3. The model these proposals converge to
@@ -393,12 +457,20 @@ replacement) — needs explicit handling in the spec.
 
 ## 4. Sequencing — which spec first?
 
-Two separate specs are anticipated, each non-trivial:
+Two separate specs were anticipated, each non-trivial:
 
 | Spec | Scope | Status |
 |---|---|---|
-| **Multi-site** | Spatial fan-out, NATS supercluster, per-site Mongo, shared Cassandra, federation Sources, `_site` provenance | **Approved**, not implemented — `2026-06-03-integration-suite-multisite-design.md` |
-| **Envelope + DAG + chaos engine** | Replace `cases:` with `input: [DAG]` + `expected: {positive,negative}` + `chaos:` loop; per-iteration fresh state | **Not yet specced** — this doc is the launchpad |
+| **Multi-site** | Spatial fan-out, NATS supercluster, per-site Mongo, shared Cassandra, federation Sources, `_site` provenance | **Implemented** as `tools/integration-suite-multisite/`. See `docs/integration-suite-multisite-findings.md` for the chat-app-team-facing findings (F-001 OUTBOX owner, F-002 federation topology). Single-site archived at `tools/archived/integration-suite/`. |
+| **Envelope + DAG + chaos engine** | Replace `cases:` with `input: [DAG]` + `expected: {positive,negative}` + `chaos:` loop; per-iteration fresh state | **Not yet specced** — this doc remains the launchpad |
+| **Seed-grammar extensions (T1, T3)** | Concrete in-grammar fixes for room metadata and arbitrary Mongo doc seeding (see §2.7) | **Surfaced; not shipped.** Ship when a scenario demands either. Cheaper than envelope+DAG; independent of it. |
+
+**Sequencing — the original "which spec first" question
+is partially answered.** Multi-site shipped first (case-based world
+intact) because the federation question was urgent. The
+envelope+DAG model is now the natural next lift — it stacks on the
+multi-site shape rather than competing with it. Original intuition
+("envelope+DAG first; multi-site folds in afterward") is moot.
 
 **Open question on order:**
 - Building multi-site FIRST onto the case-based world is more code that

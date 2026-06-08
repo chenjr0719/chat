@@ -405,6 +405,36 @@ concern in `README.md`.
 
 ---
 
+## Common pitfalls — async-reply assertions
+
+The message-send pipeline (and any other path that uses
+`jetstream_publish` + an async response on a reply subject) has a
+shape that doesn't map onto the obvious `reply` location. Two
+specific traps:
+
+1. **`reply` location only fires for `nats_request`.** If your
+   `input.verb` is `jetstream_publish`, the ReplyReader buffer stays
+   empty. Use `nats_subscribe` on the service's response subject
+   (e.g. `chat.user.${alice.account}.response.<requestId>`) instead.
+
+2. **`nats_subscribe` is a Warmer with no replay.** The subscription
+   opens before the verb fires, but Core NATS subjects aren't
+   buffered — if the publish raced ahead of the subscribe, the
+   response is lost forever. Two rules to defang this:
+   - Hardcode the `requestId` in the input payload (don't use `$auto`)
+     so the subscribe subject is known at Warm time. Phase B's
+     `${input.payload.requestId}` token resolves AFTER fire, too late
+     for the Warmer.
+   - Declare the `nats_subscribe` entry BEFORE any other entries in
+     `expected[]`. The runner walks Warmers in declaration order
+     before firing; the entry's position is what guarantees the open
+     wins the race.
+
+Worked example:
+`scenarios/drafts/message-pipeline-send-and-persist.yaml` Surface 1.
+
+---
+
 ## Architecture
 
 `tools/integration-suite-multisite/ARCHITECTURE.md` explains the
