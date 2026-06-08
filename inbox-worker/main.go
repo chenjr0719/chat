@@ -16,6 +16,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
 	"github.com/hmchangw/chat/pkg/errcode"
+	"github.com/hmchangw/chat/pkg/jobguard"
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -345,26 +346,31 @@ func main() {
 	handler := NewHandler(store)
 
 	cctx, err := cons.Consume(func(m oteljetstream.Msg) {
-		handlerCtx, _ := natsutil.StampRequestID(m.Context(), m.Headers(), m.Subject())
-		if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
-			// Permanent failures (poison messages) Ack so JetStream stops
-			// redelivering; transient infra errors Nak for redelivery.
-			if _, isPermanent := errcode.IsPermanent(err); isPermanent {
-				slog.Warn("permanent event failure — dropping (Ack)", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
-				if err := m.Ack(); err != nil {
-					slog.Error("failed to ack permanent message", "error", err)
+		// jobguard recovers handler panics — the Consume callback runs outside
+		// natsrouter's Recovery middleware, so an unrecovered panic would crash
+		// the worker and crash-loop on JetStream redelivery.
+		jobguard.Run(m.Msg, func() {
+			handlerCtx, _ := natsutil.StampRequestID(m.Context(), m.Headers(), m.Subject())
+			if err := handler.HandleEvent(handlerCtx, m.Data()); err != nil {
+				// Permanent failures (poison messages) Ack so JetStream stops
+				// redelivering; transient infra errors Nak for redelivery.
+				if _, isPermanent := errcode.IsPermanent(err); isPermanent {
+					slog.Warn("permanent event failure — dropping (Ack)", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
+					if err := m.Ack(); err != nil {
+						slog.Error("failed to ack permanent message", "error", err)
+					}
+					return
+				}
+				slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
+				if err := m.Nak(); err != nil {
+					slog.Error("failed to nak message", "error", err)
 				}
 				return
 			}
-			slog.Error("handle event failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
-			if err := m.Nak(); err != nil {
-				slog.Error("failed to nak message", "error", err)
+			if err := m.Ack(); err != nil {
+				slog.Error("failed to ack message", "error", err)
 			}
-			return
-		}
-		if err := m.Ack(); err != nil {
-			slog.Error("failed to ack message", "error", err)
-		}
+		})
 	})
 	if err != nil {
 		slog.Error("consume failed", "error", err)
