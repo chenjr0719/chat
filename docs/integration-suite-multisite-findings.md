@@ -123,3 +123,129 @@ canonical) and `message-worker/handler.go` (consumes + persists)
 actually do.
 
 ---
+
+## F-008 — `publishThreadSubOutboxIfRemote` has three observationally-indistinguishable exit paths
+
+**Layer:** chat-app code (observability).
+
+**Status:** observed — chat-app team action pending.
+
+In `message-worker/handler.go`, `publishThreadSubOutboxIfRemote`
+has three exit paths that all look identical from an operator's
+log:
+
+- `ownerSiteID == ""` → `slog.WarnContext("owner siteID empty, skipping outbox publish")`, return nil
+- `ownerSiteID == h.siteID` → silent return nil (same-site skip)
+- successful cross-site publish → silent return nil
+
+When a cross-site federation scenario fails to deliver an event
+to `OUTBOX_<site>`, the operator has no log trace to distinguish
+"the publish silently succeeded but didn't land on the stream"
+from "the publish was correctly skipped because the remote-user
+data looked local."
+
+Surfaced during authoring of
+`thread-first-reply-remote-parent-federates-subscription` (Run
+sequence ending in the 18/19 cycle). Surfaces 2 and 3 of the
+scenario prove the handler reached `InsertThreadSubscription` for
+both the parent author and the replier (Mongo rows present).
+Surface 4 (`jetstream_consume` on `OUTBOX_site-a` filtered by
+`outbox.site-a.to.site-b.thread_subscription_upserted`) times out
+with zero events. The full message-worker log across the entire
+run contains zero log lines mentioning the test's message IDs at
+all — no "owner user not found" warn, no "owner siteID empty"
+warn, no publish-error error. The publish, if it happened, left no
+trace.
+
+**Recommended fix (one line):**
+Add a `slog.InfoContext` log immediately before the `h.publish(...)`
+call in `publishThreadSubOutboxIfRemote`:
+
+```go
+slog.InfoContext(ctx, "publishing thread subscription outbox",
+    "ownerSiteID", ownerSiteID,
+    "threadRoomID", sub.ThreadRoomID,
+    "user_id", sub.UserID,
+    "msgID", msgID,
+    "subject", subj,
+    "request_id", natsutil.RequestIDFromContext(ctx))
+```
+
+After this lands, re-run the failing scenario:
+- Log fires with `ownerSiteID="site-b"` and the cross-site subject
+  → publish was attempted; the gap is downstream (subject not
+  captured by the stream, JetStream dedup window swallowing it,
+  etc.). Cheap to localize from there with a stream inspect at the
+  right moment.
+- Log doesn't fire → the handler isn't actually reaching the publish
+  branch for this scenario despite Surfaces 2+3 proving it ran past
+  the upsert. Most likely cause to look at: the subsequent-reply
+  branch being taken instead of first-reply due to state leakage
+  from a prior scenario in the same run (see F-009).
+
+**Adjacent (broader audit):**
+
+- Same observability gap applies to the replier publish a few lines
+  below in `handleFirstThreadReply` —
+  `publishThreadSubOutboxIfRemote(ctx, replierSub, replier.SiteID,
+  msg.ID)`. One log line covers both call sites.
+- The same silent-success pattern likely exists in other
+  `publish*OutboxIfRemote` helpers across `room-worker` and
+  `room-service`. Worth a sweep with the same instrumentation
+  discipline. Closes the parallel of `plan-ahead §2.9` at the
+  production-code layer.
+
+---
+
+## F-009 — Service in-process caches violate per-scenario isolation
+
+**Layer:** chat-app code (cache lifecycle / test-environment configurability).
+
+**Status:** observed — chat-app team action pending. High severity (soundness).
+
+The integration suite's `Sandbox.Setup` drops Mongo collections and
+truncates Cassandra tables between scenarios, guaranteeing
+byte-identical store state at scenario start. But the service
+containers (gatekeeper, room-service, others) stay up for the whole
+run and keep their **in-process caches** — sub-cache keyed
+`(roomID, account)`, room-meta-cache keyed `roomID`, user-cache,
+each with ~2-minute TTLs.
+
+When scenario N populates a cache key, scenario N+1 — even with
+clean Mongo state — can see the stale cached projection if it
+references the same key within the TTL window.
+
+**Concrete failure** (Run 649f → 1982 in the latest cycle):
+- `gatekeeper-large-room-member-blocked` ran first, caching
+  `(alice@r-busy, roles=[member])`.
+- `gatekeeper-large-room-owner-bypass` ran second, expected
+  `(alice@r-busy, roles=[owner])`. The cached `[member]` projection
+  won → `canBypassLargeRoomCap` saw no owner role → capped → wrong
+  verdict.
+- Run 1982 fixed it by giving the second scenario a unique room ID.
+  Only difference. Same code, same env.
+
+**Why this is the worst class of bug:** silent, order-dependent
+false verdicts — not a loud setup error. A scenario reordering
+could falsely-green a negative scenario without anyone noticing.
+The suite's "byte-identical state per scenario" guarantee turns
+out to be DB-level only.
+
+**Mitigation options for the chat-app team:**
+
+1. **Env-driven cache TTL override.** Services accept e.g.
+   `*_CACHE_TTL` env vars; the test stack sets them to `0`
+   (disabling the cache in the test environment). Smallest
+   architectural shape; preserves production caching behavior
+   unchanged.
+2. **Admin cache-flush endpoint.** Each cache-holding service
+   exposes a NATS or HTTP admin verb to invalidate its caches.
+   The test sandbox calls it between scenarios. More plumbing;
+   useful operationally too (cache flush on demand without restart).
+
+The test tool can mitigate at the author-discipline layer (use
+unique `(account, roomID)` per scenario — see plan-ahead §2.10) but
+the discipline is a footgun, not a fix. The structural fix is
+in chat-app code.
+
+---

@@ -450,6 +450,94 @@ scenarios/drafts/ confusion matrix. A scenario is for "the system
 does X under Y verb fire"; a Go test is for "the matcher returns
 Z when given W input."
 
+### 2.10 Cross-scenario contamination via in-process service caches
+
+A soundness gap surfaced while authoring the large-room cap
+scenarios: the sandbox truncates Mongo + Cassandra between
+scenarios but the service containers stay up for the whole run and
+retain their **in-process caches** (sub-cache, room-meta-cache,
+user-cache — each with ~2-minute TTLs). Within the TTL window, a
+second scenario referencing the same cache key (e.g. same
+`(account, roomID)` pair) sees the FIRST scenario's projection,
+even with byte-identical store state at Setup.
+
+Concrete failure shape (Run 649f → 1982 in the latest cycle):
+
+```
+   T0  scenario A fires:
+       (alice@r-busy, roles=[member])
+       gatekeeper caches this projection (TTL ~2 min)
+   
+   T1  Sandbox.Setup runs between A and B
+       drops Mongo collections, truncates Cassandra
+       ✓ store state byte-identical to T0
+       ✗ gatekeeper still holds (alice@r-busy, [member]) in memory
+   
+   T2  scenario B fires:
+       expects (alice@r-busy, roles=[owner])
+       Mongo says [owner] (Setup re-seeded it)
+       gatekeeper reads its own cache, sees [member], DOESN'T re-fetch
+       canBypassLargeRoomCap → no owner role → caps the post
+       ✗ scenario B fails, but for the wrong reason
+   
+   reorder scenario A and B → B passes for the wrong reason
+```
+
+This is the worst class of bug a test tool can have — silent,
+order-dependent, and falsely-greens negative scenarios just as
+easily as it falsely-reds positive ones. Logged as F-009 in the
+findings doc.
+
+**The structural fix is in chat-app code.** Either:
+- Env-driven cache TTL override per service (`*_CACHE_TTL=0` in the
+  test stack), or
+- Admin cache-flush endpoint each cache-holding service exposes
+  (NATS or HTTP).
+
+Both belong to the chat-app team; the test tool's role is the
+mitigation discipline below until one lands.
+
+**Tool-side mitigation discipline (until F-009 closes):**
+
+Scenarios that touch the same actor + same cache-keyed entity
+across a run must use unique cache keys. In practice that means:
+
+| Cache | Key shape | Unique-key discipline |
+|---|---|---|
+| Gatekeeper sub-cache | `(roomID, account)` | Different `roomID` across scenarios that share an actor |
+| Gatekeeper room-meta-cache | `roomID` | Same — different `roomID` |
+| User-cache | `userID` | Different actor alias (which → different `userID`) |
+
+Worked: every gatekeeper-large-room-* scenario uses a unique room
+ID (`r-busy-member`, `r-busy-owner`, etc.) rather than reusing
+`r-busy` across alice's roles. Adds 1 line per scenario; avoids
+the cache stale-read entirely.
+
+The discipline is a footgun: any author who forgets it triggers
+the contamination, silently. Document it loudly in AUTHORING.md
+when this finally hits a real scenario that can't easily use unique
+keys (e.g. scenarios coordinating across the same room ID for
+federation-receive testing — there, the chat-app fix is the
+unblock).
+
+**Why this lives in plan-ahead and not just findings.md:** because
+the discipline change is OURS. F-009 is for the chat-app team's
+ruling on the structural fix; this section is the work the test
+tool has to do in parallel — AUTHORING.md note, possibly a loader
+check that flags duplicate `(account, roomID)` pairs across
+scenarios in the same run, possibly a lint rule. Defer the
+implementation until the discipline is broken by a real scenario
+that can't easily route around it; until then, the warning in
+AUTHORING.md is enough.
+
+**Estimated implementation:**
+- AUTHORING.md note: 15 min.
+- Loader cross-scenario duplicate-key check: ~1 hour (walks all
+  loaded scenarios, builds the cache-key tuple per scenario, errors
+  if any tuple appears twice).
+
+Both ship-when-demand-arrives.
+
 ---
 
 ## 3. The model these proposals converge to
@@ -595,6 +683,7 @@ Two separate specs were anticipated, each non-trivial:
 | **Seed-grammar extensions (T1, T3)** | Concrete in-grammar fixes for room metadata and arbitrary Mongo doc seeding (see §2.7) | **Surfaced; not shipped.** Ship when a scenario demands either. Cheaper than envelope+DAG; independent of it. |
 | **Scenario organization (§2.8)** | Allow arbitrary subdirectory nesting under `scenarios/drafts/` and `scenarios/approved/`; show path in failure reports + interactive menu | **Surfaced; not shipped.** Half-day implementation, no spec needed. Ship when the flat layout starts hurting. |
 | **Substrate-error audit (§2.9)** | Drop `//nolint:errcheck` suppressions at substrate boundaries across the six pollers; convert silent failures to loud `slog.Warn` (or hard errors). `logs_tail` done; five more to audit. | **One done; rest pending.** 1-2 hours per remaining poller. Independent of any spec direction. |
+| **Cross-scenario cache isolation (§2.10)** | Tool-side mitigation discipline (unique cache keys per scenario) + optional loader check for duplicate `(account, roomID)` pairs. Pairs with chat-app finding F-009 for the structural fix. | **Discipline named; check not built.** ~15 min for the AUTHORING.md note; ~1 hour for the loader check. Ship when a scenario can't easily route around the discipline. |
 
 **Sequencing — the original "which spec first" question
 is partially answered.** Multi-site shipped first (case-based world
