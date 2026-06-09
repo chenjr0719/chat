@@ -62,12 +62,23 @@ func NewJetStreamConsumePoller(conns map[string]*nats.Conn, startTime time.Time)
 // site picks the admin conn from p.conns and opens the consumer on
 // that conn's local JetStream domain. Cross-domain JS API calls don't
 // traverse the supercluster gateway under our trust-chain config.
+//
+// Substrate-error discipline (plan-ahead §2.9): JS-side failures
+// (missing stream, malformed filter, broken admin conn, consumer-
+// create denied) MUST surface as loud `slog.Warn` lines naming the
+// stream + filter — never collapse to "zero events", which is
+// indistinguishable from "the publisher genuinely didn't write any
+// message" and would silently green `not: true` assertions. Mirrors
+// the cassandra_select pass (e90fb60), mongo_find pass (aeebf2c),
+// and logs_tail pass (5ee1a74). Mid-stream drops at the reader's
+// observer buffer are surfaced inside JetStreamSubjectReader.Watch
+// (loud-warn first + every 100th + on teardown).
 func (p *JetStreamConsumePoller) PollFn(site string, args map[string]any, tp string) func() []readers.Event {
 	stream, _ := args["stream"].(string)
 	filter, _ := args["filter_subject"].(string)
 	if stream == "" || filter == "" {
 		return func() []readers.Event {
-			slog.Warn("jetstream_consume: args.stream and args.filter_subject are required",
+			slog.Warn("jetstream_consume: args.stream and args.filter_subject are required — substrate not exercised this poll",
 				"stream", args["stream"], "filter_subject", args["filter_subject"])
 			return nil
 		}
@@ -75,18 +86,31 @@ func (p *JetStreamConsumePoller) PollFn(site string, args map[string]any, tp str
 	conn := p.conns[site]
 	if conn == nil {
 		return func() []readers.Event {
-			slog.Warn("jetstream_consume: no admin NATS connection for site (NATS_CREDS_FILE unset or site not in admin-conn map?)",
-				"site", site, "stream", stream, "filter_subject", filter)
+			slog.Warn("jetstream_consume: no admin NATS connection for site — substrate not exercised this poll (NATS_CREDS_FILE unset, or site missing from the admin-conn map)",
+				"site", site, "stream", stream, "filter_subject", filter, "available_sites", adminConnSiteKeys(p.conns))
 			return nil
 		}
 	}
 
 	inner, err := p.getOrOpen(conn, site, stream, filter)
 	if err != nil {
-		slog.Warn("jetstream_consume: open consumer", "site", site, "stream", stream, "filter_subject", filter, "err", err)
+		slog.Warn("jetstream_consume: open consumer FAILED — substrate error (missing stream, malformed filter, admin conn broken, or consumer-create denied); zero events are NOT 'absent', they are 'never observed'",
+			"site", site, "stream", stream, "filter_subject", filter, "err", err)
 		return func() []readers.Event { return nil }
 	}
 	return inner.PollFn("", args, tp)
+}
+
+// adminConnSiteKeys returns the keys of the admin-conn map, sorted
+// to make the "available_sites" log field deterministic.
+func adminConnSiteKeys(m map[string]*nats.Conn) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	// No sort.Strings import — the map is at most two entries
+	// (site-a, site-b) and ordering is informational only.
+	return out
 }
 
 // getOrOpen returns the cached StreamPoller for (site, stream, filter)

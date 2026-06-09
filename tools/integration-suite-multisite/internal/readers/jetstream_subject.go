@@ -3,7 +3,10 @@ package readers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -90,12 +93,12 @@ func (r *JetStreamSubjectReader) Watch(ctx context.Context, _ string, start time
 		js, err = jetstream.New(r.conn)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("jetstream.rooms-canonical: connect: %w", err)
+		return nil, fmt.Errorf("jetstream consumer: connect: %w", err)
 	}
 
 	stream, err := js.Stream(ctx, r.streamName)
 	if err != nil {
-		return nil, fmt.Errorf("jetstream.rooms-canonical: stream %q: %w", r.streamName, err)
+		return nil, fmt.Errorf("jetstream consumer: stream %q: %w", r.streamName, err)
 	}
 
 	cons, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
@@ -106,10 +109,11 @@ func (r *JetStreamSubjectReader) Watch(ctx context.Context, _ string, start time
 		InactiveThreshold: 30 * time.Second,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("jetstream.rooms-canonical: create consumer: %w", err)
+		return nil, fmt.Errorf("jetstream consumer: create consumer: %w", err)
 	}
 
 	out := make(chan Event, 16)
+	var dropped atomic.Uint64
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
 		ev := Event{
 			Location:  r.location,
@@ -124,20 +128,48 @@ func (r *JetStreamSubjectReader) Watch(ctx context.Context, _ string, start time
 		select {
 		case out <- ev:
 		default:
-			// observer buffer full — drop is preferable to blocking the
+			// Observer buffer full — drop is preferable to blocking the
 			// JetStream consumer goroutine (matches NATSReplyReader
-			// dropping policy)
+			// dropping policy). A drop is a substrate-level signal
+			// loss: the message DID arrive, but the matcher will not
+			// see it. Warn on first drop and again every 100 so a
+			// chronically-undersized buffer surfaces in the log
+			// without flooding it; matters for §2.9 because a `not:
+			// true` assertion could falsely-green if the dropped
+			// message was the one the author wanted us to observe.
+			n := dropped.Add(1)
+			if n == 1 || n%100 == 0 {
+				slog.Warn("jetstream consumer: observer buffer full — message DROPPED before matcher could see it; counts (dropped, channel cap) — investigate buffer sizing or polling cadence",
+					"stream", r.streamName, "filter_subject", r.subjectFilter,
+					"location", r.location, "dropped_so_far", n, "buffer_cap", 16,
+					"subject", msg.Subject())
+			}
 		}
 	})
 	if err != nil {
-		return nil, fmt.Errorf("jetstream.rooms-canonical: consume: %w", err)
+		return nil, fmt.Errorf("jetstream consumer: consume: %w", err)
 	}
 
 	go func() {
 		<-ctx.Done()
 		cc.Stop()
-		// Best-effort cleanup; consumer also self-expires via InactiveThreshold.
-		_ = stream.DeleteConsumer(context.Background(), cons.CachedInfo().Name)
+		// Best-effort cleanup; consumer also self-expires via
+		// InactiveThreshold. Surface a delete failure as a warn so a
+		// leaked consumer (which would survive the 30s threshold and
+		// then take itself out, but accrue server-side state in the
+		// meantime) doesn't go unnoticed. Suppress the "consumer not
+		// found" case — likely the InactiveThreshold reaped it before
+		// we got here.
+		delName := cons.CachedInfo().Name
+		if delErr := stream.DeleteConsumer(context.Background(), delName); delErr != nil && !errors.Is(delErr, jetstream.ErrConsumerNotFound) {
+			slog.Warn("jetstream consumer: teardown DeleteConsumer failed — consumer may persist until its 30s InactiveThreshold expires",
+				"stream", r.streamName, "consumer", delName, "err", delErr)
+		}
+		if total := dropped.Load(); total > 0 {
+			slog.Warn("jetstream consumer: lifetime drop count on teardown — these messages were observed by the JS consumer but DROPPED before the matcher could see them",
+				"stream", r.streamName, "filter_subject", r.subjectFilter,
+				"location", r.location, "dropped_total", total)
+		}
 		close(out)
 	}()
 

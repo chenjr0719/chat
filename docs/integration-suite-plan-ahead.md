@@ -449,12 +449,15 @@ done for the other five:
 | `reply` | dispatcher's reply buffer | wrong verb (reply only fires for nats_request) — covered in §7.2 pitfall |
 | `mongo_find` | Mongo driver query | **audited + loudened.** Dropped `//nolint:errcheck` on `cur.Close(ctx)`; replaced the stringy `strings.Contains(err.Error(), "context")` guard with `errors.Is(err, context.Canceled\|DeadlineExceeded)`; pre-cursor `Find` failure, mid-stream `Close` failure, decode failure, and cursor-iteration failure each carry a distinct warning naming collection+filter and the likely substrate cause. |
 | `cassandra_select` | gocql iter | **audited + loudened.** `iter.Close()` was already checked; warnings rewritten to name the query/params/decoded row prefix so substrate breakage (down node, missing keyspace, schema drift, bad CQL) is unmistakable in the log — "zero events" warnings explicitly say `NOT 'absent', they are 'never observed'`. |
-| `jetstream_consume` | js.Stream subscribe | **not audited.** subscribe-error and consumer-create paths still need a sweep; `_ = stream.DeleteConsumer(...)` at `readers/jetstream_subject.go:140` is a teardown-only suppress (probably fine but worth confirming). |
+| `jetstream_consume` | js.Stream subscribe | **audited + loudened.** Reader: misleading `"jetstream.rooms-canonical:"` error prefix retired (reader is generic across streams); observer-buffer drop now slog.Warn on first + every 100th + on teardown (previously silent — the worst §2.9 shape for a `not: true` assertion since the message arrived but the matcher never saw it); `DeleteConsumer` teardown failure warns (was `_ = `; ErrConsumerNotFound suppressed since InactiveThreshold may have reaped first). Poller: `getOrOpen` and missing-conn warnings rewritten with the "substrate not exercised" / "zero events are NOT 'absent'" idiom, available-site list added on missing-conn. |
 | `nats_subscribe` | core NATS subscribe | subscribe error returned by Warm — already loud, modulo same disciplines as logs_tail |
 | `logs_tail` | docker logs subprocess | **fixed** in 5ee1a74; see commit body for the trail |
 
-Remaining audit + harm-reduction pass: `jetstream_consume`.
-~1 hour. Independent of any spec direction.
+**§2.9 audit complete.** All six pollers either loudened in this
+sweep (logs_tail / cassandra_select / mongo_find / jetstream_consume)
+or judged already loud (reply / nats_subscribe). The matcher-vs-
+system test-placement corollary above remains the durable rule
+for new pollers.
 
 **Test-placement corollary.** When verifying *poller behavior*
 (does the matcher behave correctly with present-vs-absent events
