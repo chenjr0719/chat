@@ -405,33 +405,115 @@ concern in `README.md`.
 
 ---
 
-## Common pitfalls — async-reply assertions
+## Cross-scenario cache discipline
 
-The message-send pipeline (and any other path that uses
-`jetstream_publish` + an async response on a reply subject) has a
-shape that doesn't map onto the obvious `reply` location. Two
-specific traps:
+Service containers stay up across the whole run; only databases
+are reset between scenarios. The chat-app services hold in-process
+caches (sub-cache keyed `(roomID, account)`, room-meta-cache keyed
+`roomID`, user-cache keyed `userID`) with ~2-minute TTLs. Within
+the TTL window, a second scenario referencing the same cache key
+reads the FIRST scenario's projection — even though the Mongo doc
+underneath has been reseeded with the new value.
 
-1. **`reply` location only fires for `nats_request`.** If your
-   `input.verb` is `jetstream_publish`, the ReplyReader buffer stays
-   empty. Use `nats_subscribe` on the service's response subject
-   (e.g. `chat.user.${alice.account}.response.<requestId>`) instead.
+**This is a soundness issue tracked as finding F-009 and plan-ahead
+§2.10.** The structural fix lives in chat-app code (env-driven cache
+TTL override or admin cache-flush endpoint). Until that lands,
+scenario authors carry the discipline:
 
-2. **`nats_subscribe` is a Warmer with no replay.** The subscription
-   opens before the verb fires, but Core NATS subjects aren't
-   buffered — if the publish raced ahead of the subscribe, the
-   response is lost forever. Two rules to defang this:
-   - Hardcode the `requestId` in the input payload (don't use `$auto`)
-     so the subscribe subject is known at Warm time. Phase B's
-     `${input.payload.requestId}` token resolves AFTER fire, too late
-     for the Warmer.
-   - Declare the `nats_subscribe` entry BEFORE any other entries in
-     `expected[]`. The runner walks Warmers in declaration order
-     before firing; the entry's position is what guarantees the open
-     wins the race.
+### The rule
 
-Worked example:
-`scenarios/drafts/message-pipeline-send-and-persist.yaml` Surface 1.
+**Two scenarios in the same run must not reference the same
+`(actor-alias, room-id)` pair with conflicting state.** Conflicting
+state today means:
+
+- Different roles for the same `(alias, room-id)` pair
+  (`alice@r-busy=[member]` in one scenario, `alice@r-busy=[owner]`
+  in another)
+- The same alias declared local in one scenario and via
+  `remote_users:` in another
+- The same `roomId` with different `user_count` values
+
+### The discipline
+
+Make the room ID unique per scenario when conflict is unavoidable.
+
+**Worked example — large-room cap variants:**
+
+```yaml
+# gatekeeper-large-room-member-blocked.yaml
+sites:
+  site-a:
+    seed:
+      rooms:
+        - id: r-busy-member       # NOT r-busy
+          name: BusyChannelMember
+          user_count: 501
+      memberships:
+        alice: [r-busy-member]
+```
+
+```yaml
+# gatekeeper-large-room-owner-bypass.yaml
+sites:
+  site-a:
+    seed:
+      rooms:
+        - id: r-busy-owner        # NOT r-busy
+          name: BusyChannelOwner
+          user_count: 501
+      memberships:
+        alice:
+          - room: r-busy-owner
+            roles: [owner]
+```
+
+The two scenarios both exercise the large-room cap but cache under
+different `(alice, room)` keys. No contamination. Same applies to
+remote-vs-local conflicts:
+
+**Worked example — alias collision across local/remote:**
+
+```yaml
+# scenarios that need bob LOCAL on site-a:
+sites:
+  site-a:
+    seed:
+      users:
+        bob: { verified: true }    # alias `bob`
+
+# scenarios that need bob REMOTE on site-a (parent author on site-b):
+sites:
+  site-a:
+    seed:
+      remote_users:
+        remotebob:                 # different alias avoids user-cache collision
+          home_site: site-b
+  site-b:
+    seed:
+      users:
+        remotebob: { verified: true }
+```
+
+### When the discipline is impossible
+
+A few scenarios genuinely need shared `(alias, room)` keys — e.g.
+chained federation flows that compose against a stable
+pre-condition. Until F-009 closes those need either:
+
+- A real fix from the chat-app team (preferred).
+- A `pre_fire_scripts` step that nudges the cache out of band (e.g.
+  via an admin endpoint when one ships).
+
+Document the constraint in the scenario YAML's top comment so the
+reviewer understands the dependency.
+
+### Loader-time enforcement
+
+`make validate` does not yet check this discipline — it's
+documented but unenforced. If you trip it, the failure mode is
+silent (wrong verdict, runs alphabetically after a scenario that
+cached the wrong state). The loader check is plan-ahead §2.10's
+next concrete deliverable.
 
 ---
 
