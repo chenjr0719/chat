@@ -60,7 +60,15 @@ func main() {
 	if err := cat.ValidateReaderEvents(c); err != nil {
 		catErrs = append(catErrs, err.Error())
 	}
-	loaded, scErrs := sc.LoadAllInDir(scRoot)
+	scenarios, scErrs := sc.LoadAllParsedInDir(scRoot)
+
+	// Cross-scenario cache-conflict check (F-009 / plan-ahead §2.10).
+	// Surfaced as warnings on stderr — does NOT fail validate today.
+	// Converted to a hard error once the existing scenario set is
+	// brought into compliance (plan-ahead §2.10 implementation
+	// backlog). Loud-but-non-blocking is the right level until the
+	// coordinated scenario cleanup ships.
+	crossErrs := sc.CrossScenarioCheck(scenarios)
 
 	if len(catErrs) > 0 || len(scErrs) > 0 {
 		for _, e := range catErrs {
@@ -71,6 +79,12 @@ func main() {
 		}
 		os.Exit(1)
 	}
+	for _, e := range crossErrs {
+		fmt.Fprintln(os.Stderr, "WARNING (F-009):", e)
+	}
 	fmt.Println("catalog: ok —", len(c.Verbs), "verbs,", len(c.Readers), "readers,", len(c.Services), "services")
-	fmt.Println("scenarios: ok —", loaded, "drafts parsed")
+	fmt.Println("scenarios: ok —", len(scenarios), "drafts parsed")
+	if n := len(crossErrs); n > 0 {
+		fmt.Printf("cross-scenario warnings: %d (F-009; see AUTHORING.md §Cross-scenario cache discipline)\n", n)
+	}
 }
