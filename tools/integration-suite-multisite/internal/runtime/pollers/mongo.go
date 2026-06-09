@@ -2,8 +2,8 @@ package pollers
 
 import (
 	"context"
+	"errors"
 	"log/slog"
-	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -49,11 +49,20 @@ func NewMongoFindPoller(sites map[string]*mongo.Database, startTime time.Time) *
 // ignored — Mongo documents carry no trace context. Per-case trace
 // attribution falls out of the timestamp filter + per-scenario
 // sandbox isolation.
+//
+// Substrate-error discipline (plan-ahead §2.9): Mongo-side failures
+// (connection refused, auth error, missing database/collection,
+// malformed filter, schema drift on Decode) MUST surface as loud
+// `slog.Warn` lines naming the collection + filter — never collapse
+// to "zero rows", which is indistinguishable from "row genuinely
+// absent" and would silently green `not: true` assertions. Mirrors
+// the cassandra_select pass (commit e90fb60) and the logs_tail pass
+// (commit 5ee1a74).
 func (p *MongoFindPoller) PollFn(site string, args map[string]any, _ string) func() []readers.Event {
 	db, ok := p.Sites[site]
 	if !ok || db == nil {
 		return func() []readers.Event {
-			slog.Warn("mongo_find: no database for site",
+			slog.Warn("mongo_find: no database for site — substrate not exercised this poll",
 				"site", site, "available", siteKeys(p.Sites))
 			return nil
 		}
@@ -62,7 +71,8 @@ func (p *MongoFindPoller) PollFn(site string, args map[string]any, _ string) fun
 	collection, _ := args["collection"].(string)
 	if collection == "" {
 		return func() []readers.Event {
-			slog.Warn("mongo_find: args.collection is required and must be a string", "got", args["collection"])
+			slog.Warn("mongo_find: args.collection is required and must be a string — substrate not exercised this poll",
+				"got", args["collection"])
 			return nil
 		}
 	}
@@ -77,16 +87,39 @@ func (p *MongoFindPoller) PollFn(site string, args map[string]any, _ string) fun
 
 		cur, err := coll.Find(ctx, filter)
 		if err != nil {
-			slog.Warn("MongoFindPoller: find", "collection", collection, "err", err)
+			// Pre-cursor failure: connection refused, auth error,
+			// malformed filter (bson encode panic caught upstream),
+			// missing database. Zero events here are NOT 'absent',
+			// they are 'never observed' — name the substrate so
+			// the operator can't misread the empty result.
+			slog.Warn("mongo_find: Find failed before cursor opened — substrate error (connection / auth / malformed filter / missing database); zero events are NOT 'absent', they are 'never observed'",
+				"collection", collection, "filter", filter, "err", err)
 			return nil
 		}
-		defer cur.Close(ctx) //nolint:errcheck
+		defer func() {
+			// Drop the prior //nolint:errcheck — a Close error after a
+			// successful Next loop usually means the driver gave up
+			// mid-stream (network hiccup, server cursor expiry). The
+			// caller already has whatever events Next returned, but
+			// the truncation is worth surfacing so it doesn't look
+			// like "the rest of the rows weren't there."
+			if cerr := cur.Close(ctx); cerr != nil && !errors.Is(cerr, context.Canceled) && !errors.Is(cerr, context.DeadlineExceeded) {
+				slog.Warn("mongo_find: cursor Close failed — partial result possible; remaining rows may exist on the server",
+					"collection", collection, "err", cerr)
+			}
+		}()
 
 		var out []readers.Event
 		for cur.Next(ctx) {
 			var doc map[string]any
 			if err := cur.Decode(&doc); err != nil {
-				slog.Warn("MongoFindPoller: decode", "collection", collection, "err", err)
+				// A decode error against `map[string]any` is rare —
+				// usually means a non-BSON document slipped in (e.g.
+				// schema drift writing a binary field where one wasn't
+				// expected). Skip the row but name it loudly so the
+				// operator doesn't see a missing-row mystery.
+				slog.Warn("mongo_find: row decode failed — likely BSON shape drift; row skipped",
+					"collection", collection, "err", err)
 				continue
 			}
 			out = append(out, readers.Event{
@@ -97,8 +130,18 @@ func (p *MongoFindPoller) PollFn(site string, args map[string]any, _ string) fun
 				Type:      readers.EventCascade,
 			})
 		}
-		if err := cur.Err(); err != nil && !strings.Contains(err.Error(), "context") {
-			slog.Warn("MongoFindPoller: cursor", "collection", collection, "err", err)
+		// cur.Err() surfaces cursor-iteration errors (server-side
+		// failures during pagination, killCursors, etc.) that Next
+		// hides behind `return false`. Suppress the context cancel
+		// case because every successful poll ends with the deferred
+		// cancel firing — that's expected teardown, not a substrate
+		// problem. errors.Is replaces the prior stringy
+		// `strings.Contains(err.Error(), "context")` so a future
+		// non-context error containing the word "context" can't
+		// sneak past unnoticed.
+		if err := cur.Err(); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("mongo_find: cursor iteration error — partial result possible; matcher will see only the rows Next yielded before the error",
+				"collection", collection, "err", err)
 		}
 		return out
 	}

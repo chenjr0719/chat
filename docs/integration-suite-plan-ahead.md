@@ -447,15 +447,14 @@ done for the other five:
 | Poller | Substrate | Audit state |
 |---|---|---|
 | `reply` | dispatcher's reply buffer | wrong verb (reply only fires for nats_request) — covered in §7.2 pitfall |
-| `mongo_find` | Mongo driver query | **not audited.** `cur.Close(ctx) //nolint:errcheck` at `pollers/mongo.go:83` is the next loud-fail target. |
+| `mongo_find` | Mongo driver query | **audited + loudened.** Dropped `//nolint:errcheck` on `cur.Close(ctx)`; replaced the stringy `strings.Contains(err.Error(), "context")` guard with `errors.Is(err, context.Canceled\|DeadlineExceeded)`; pre-cursor `Find` failure, mid-stream `Close` failure, decode failure, and cursor-iteration failure each carry a distinct warning naming collection+filter and the likely substrate cause. |
 | `cassandra_select` | gocql iter | **audited + loudened.** `iter.Close()` was already checked; warnings rewritten to name the query/params/decoded row prefix so substrate breakage (down node, missing keyspace, schema drift, bad CQL) is unmistakable in the log — "zero events" warnings explicitly say `NOT 'absent', they are 'never observed'`. |
 | `jetstream_consume` | js.Stream subscribe | **not audited.** subscribe-error and consumer-create paths still need a sweep; `_ = stream.DeleteConsumer(...)` at `readers/jetstream_subject.go:140` is a teardown-only suppress (probably fine but worth confirming). |
 | `nats_subscribe` | core NATS subscribe | subscribe error returned by Warm — already loud, modulo same disciplines as logs_tail |
 | `logs_tail` | docker logs subprocess | **fixed** in 5ee1a74; see commit body for the trail |
 
-Remaining audit + harm-reduction pass: `mongo_find` and
-`jetstream_consume`. ~1 hour each. Independent of any spec
-direction.
+Remaining audit + harm-reduction pass: `jetstream_consume`.
+~1 hour. Independent of any spec direction.
 
 **Test-placement corollary.** When verifying *poller behavior*
 (does the matcher behave correctly with present-vs-absent events
