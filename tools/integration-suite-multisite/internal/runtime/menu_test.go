@@ -115,15 +115,41 @@ func TestInitMenuState_SortsByName(t *testing.T) {
 		"/tmp/alpha.yaml",
 		"/tmp/mike.yaml",
 	}
-	state := initMenuState(files)
+	state := initMenuState("/tmp", files)
 	require.Len(t, state.rows, 3)
 	assert.Equal(t, "alpha", state.rows[0].name)
 	assert.Equal(t, "mike", state.rows[1].name)
 	assert.Equal(t, "zulu", state.rows[2].name)
 }
 
+func TestInitMenuState_PopulatesRelPathForNesting(t *testing.T) {
+	// Plan-ahead §2.8: subdir nesting should show up in the menu
+	// row's relPath so the operator sees subdirectory location.
+	files := []string{
+		"/scenarios/drafts/alpha.yaml",
+		"/scenarios/drafts/messages/send.yaml",
+		"/scenarios/drafts/rooms/create.yaml",
+	}
+	state := initMenuState("/scenarios/drafts", files)
+	require.Len(t, state.rows, 3)
+	gotRel := map[string]string{}
+	for _, r := range state.rows {
+		gotRel[r.name] = r.relPath
+	}
+	assert.Equal(t, "alpha.yaml", gotRel["alpha"])
+	assert.Equal(t, "messages/send.yaml", gotRel["send"])
+	assert.Equal(t, "rooms/create.yaml", gotRel["create"])
+}
+
+func TestDeriveRelPath_FallbackOnEscape(t *testing.T) {
+	// A file outside root should fall back to the basename rather
+	// than emitting "../" relative noise.
+	assert.Equal(t, "elsewhere.yaml", deriveRelPath("/scenarios/drafts", "/other/elsewhere.yaml"))
+	assert.Equal(t, "foo.yaml", deriveRelPath("", "/anywhere/foo.yaml"))
+}
+
 func TestInitMenuState_InitialStatusIsNotRun(t *testing.T) {
-	state := initMenuState([]string{"/tmp/foo.yaml"})
+	state := initMenuState("/tmp", []string{"/tmp/foo.yaml"})
 	require.Len(t, state.rows, 1)
 	assert.Equal(t, statusNotRun, state.rows[0].status)
 	assert.Empty(t, state.rows[0].reason)
@@ -150,15 +176,15 @@ func TestRepeatHint_NoPriorActionRendersEmpty(t *testing.T) {
 // ─── format helpers ────────────────────────────────────────────────
 
 func TestFormatStatus_GlyphsMatchSpec(t *testing.T) {
-	assert.Equal(t, "—", formatStatus(scenarioRow{status: statusNotRun}))
-	assert.Equal(t, "↻", formatStatus(scenarioRow{status: statusRunning}))
+	assert.Equal(t, "—", formatStatus(&scenarioRow{status: statusNotRun}))
+	assert.Equal(t, "↻", formatStatus(&scenarioRow{status: statusRunning}))
 }
 
 func TestFormatStatus_PassFailIncludeDuration(t *testing.T) {
 	row := scenarioRow{status: statusPass, duration: 198_000_000} // 198ms
-	assert.Equal(t, "✓ 198ms", formatStatus(row))
+	assert.Equal(t, "✓ 198ms", formatStatus(&row))
 	row = scenarioRow{status: statusFail, duration: 5_000_000_000} // 5s
-	assert.Equal(t, "✗ 5.0s", formatStatus(row))
+	assert.Equal(t, "✗ 5.0s", formatStatus(&row))
 }
 
 func TestTruncate_LongNamesEndWithEllipsis(t *testing.T) {

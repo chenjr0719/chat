@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,6 +54,7 @@ const (
 // scenarioRow is one displayable / pickable scenario.
 type scenarioRow struct {
 	path     string // absolute or runner-relative file path
+	relPath  string // path relative to the scenarios root, for display (subdir nesting, §2.8)
 	name     string // from Scenario.Name
 	status   rowStatus
 	duration time.Duration
@@ -70,7 +72,7 @@ type menuState struct {
 // the per-scenario runner. Per-pick I/O errors (parse failures,
 // file-not-found on disk) are surfaced inline and the loop continues.
 func runMenuLoop(ctx context.Context, sess *session, scenarioFiles []string) error {
-	state := initMenuState(scenarioFiles)
+	state := initMenuState(sess.Cfg.ScenariosDir, scenarioFiles)
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
@@ -116,10 +118,10 @@ func runMenuLoop(ctx context.Context, sess *session, scenarioFiles []string) err
 // are non-fatal — the row keeps the path as a fallback name + a
 // reason hint, so the operator can still pick it (e.g. to see the
 // parse error inline) or `r` rescan after fixing.
-func initMenuState(files []string) menuState {
+func initMenuState(root string, files []string) menuState {
 	rows := make([]scenarioRow, 0, len(files))
 	for _, f := range files {
-		row := scenarioRow{path: f, name: deriveDisplayName(f)}
+		row := scenarioRow{path: f, relPath: deriveRelPath(root, f), name: deriveDisplayName(f)}
 		if item, err := scenario.LoadFile(f); err == nil {
 			if s, ok := item.(*scenario.Scenario); ok && s.Name != "" {
 				row.name = s.Name
@@ -151,7 +153,7 @@ func rescanRows(dir string, prev []scenarioRow) []scenarioRow {
 			rows = append(rows, old)
 			continue
 		}
-		row := scenarioRow{path: f, name: deriveDisplayName(f)}
+		row := scenarioRow{path: f, relPath: deriveRelPath(dir, f), name: deriveDisplayName(f)}
 		if item, err := scenario.LoadFile(f); err == nil {
 			if s, ok := item.(*scenario.Scenario); ok && s.Name != "" {
 				row.name = s.Name
@@ -330,8 +332,14 @@ func summariseLastScenarioResult(report *RunReport, s *scenario.Scenario) (bool,
 func renderMenu(w io.Writer, state *menuState) {
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "scenarios (%d):\n", len(state.rows))
-	for i, row := range state.rows {
-		fmt.Fprintf(w, "  [%2d]  %-48s %s\n", i+1, truncate(row.name, 48), formatStatus(row))
+	for i := range state.rows {
+		// Two columns after the index: scenario name + relative file
+		// path. Path makes subdirectory location visible (plan-ahead
+		// §2.8) and lets the operator `vi` straight to the file from
+		// the menu.
+		row := &state.rows[i]
+		fmt.Fprintf(w, "  [%2d]  %-44s  %-40s  %s\n",
+			i+1, truncate(row.name, 44), truncate(row.relPath, 40), formatStatus(row))
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "▶ pick [1-%d] | a=all | f=failed | r=rescan | q=quit%s : ",
@@ -353,7 +361,7 @@ func repeatHint(last menuAction) string {
 	}
 }
 
-func formatStatus(row scenarioRow) string {
+func formatStatus(row *scenarioRow) string {
 	switch row.status {
 	case statusNotRun:
 		return "—"
@@ -402,9 +410,9 @@ func removeScenarioRows(report *RunReport, scenarioName string) {
 		return
 	}
 	kept := report.Cases[:0]
-	for _, c := range report.Cases {
-		if c.ScenarioName != scenarioName {
-			kept = append(kept, c)
+	for i := range report.Cases {
+		if report.Cases[i].ScenarioName != scenarioName {
+			kept = append(kept, report.Cases[i])
 		}
 	}
 	// Zero out the tail so the underlying slice doesn't retain
@@ -414,6 +422,22 @@ func removeScenarioRows(report *RunReport, scenarioName string) {
 		report.Cases[i] = CaseReport{}
 	}
 	report.Cases = kept
+}
+
+// deriveRelPath returns the file path relative to root for menu
+// display. Used to surface subdirectory location (plan-ahead §2.8 —
+// arbitrary nesting under scenarios/drafts/). Falls back to the
+// basename when the relative computation would escape root, so the
+// row still has something useful to show.
+func deriveRelPath(root, path string) string {
+	if root == "" {
+		return filepath.Base(path)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return filepath.Base(path)
+	}
+	return rel
 }
 
 // deriveDisplayName falls back to the file's basename (no extension)

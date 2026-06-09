@@ -36,6 +36,13 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run is the body of main, factored out so deferred cleanup
+// (`nc.Drain`) actually executes before process exit. Returning
+// non-zero from main directly via os.Exit would skip every defer.
+func run() int {
 	url := flag.String("url", "", "NATS URL (e.g., nats://localhost:4222) — required")
 	creds := flag.String("creds", "", "absolute path to NATS credentials file — required")
 	domain := flag.String("domain", "", "JetStream domain (e.g., site-a); empty = default domain")
@@ -46,7 +53,7 @@ func main() {
 	if *url == "" || *creds == "" || *streamName == "" || *subject == "" {
 		fmt.Fprintf(os.Stderr, "createoutbox: -url, -creds, -stream, -subject are all required\n")
 		flag.Usage()
-		os.Exit(2)
+		return 2
 	}
 
 	nc, err := nats.Connect(
@@ -57,7 +64,7 @@ func main() {
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "createoutbox: NATS connect %s: %v\n", *url, err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() { _ = nc.Drain() }()
 
@@ -69,7 +76,7 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "createoutbox: JetStream context (domain=%q): %v\n", *domain, err)
-		os.Exit(1)
+		return 1
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -82,8 +89,9 @@ func main() {
 	if _, err := js.CreateOrUpdateStream(ctx, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "createoutbox: CreateOrUpdateStream %s (domain=%q, subject=%q): %v\n",
 			*streamName, *domain, *subject, err)
-		os.Exit(1)
+		return 1
 	}
 
 	fmt.Printf("createoutbox: ready stream=%s domain=%s subject=%s\n", *streamName, *domain, *subject)
+	return 0
 }

@@ -62,6 +62,13 @@ func main() {
 	}
 	scenarios, scErrs := sc.LoadAllParsedInDir(scRoot)
 
+	// Scenario-name uniqueness — hard error (plan-ahead §2.8).
+	// The `scenario:` field is the perf-history key and the menu /
+	// reporter identity; subdirectory nesting (now allowed) makes
+	// cross-directory collisions possible. Fold into scErrs so it
+	// triggers the same exit-1 path as per-file parse errors.
+	scErrs = append(scErrs, sc.CheckScenarioNameUniqueness(scenarios)...)
+
 	// Cross-scenario cache-conflict check (F-009 / plan-ahead §2.10).
 	// Surfaced as warnings on stderr — does NOT fail validate today.
 	// Converted to a hard error once the existing scenario set is

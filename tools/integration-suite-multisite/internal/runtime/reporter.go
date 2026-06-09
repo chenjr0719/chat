@@ -17,6 +17,11 @@ type ScenarioReport struct {
 	// ScenarioName is an alias for Name retained for backward compatibility.
 	// Callers should use Name going forward.
 	ScenarioName string
+	// SourcePath is the YAML file's path relative to the runner CWD
+	// (or absolute). Surfaced in failure detail so the operator can
+	// `vi` straight to the file — important now that subdirectory
+	// nesting under scenarios/drafts/ is allowed (plan-ahead §2.8).
+	SourcePath string
 	// Subset is kept for backward compatibility but unused in multi-site flow.
 	Subset   string
 	Status   string
@@ -182,6 +187,9 @@ func renderFailureDetails(cases []CaseReport) string {
 			continue
 		}
 		fmt.Fprintf(&b, "### %s — %s\n\n", c.ScenarioName, c.Verdict.Outcome)
+		if c.SourcePath != "" {
+			fmt.Fprintf(&b, "- file: `%s`\n", c.SourcePath)
+		}
 		fmt.Fprintf(&b, "- subset: `%s`  kind: `%s`  duration: %s\n",
 			c.Subset, c.Kind, formatDuration(c.Duration.Milliseconds()))
 		if c.Verdict.Reason == "" {

@@ -60,14 +60,6 @@ type aliasRoomKey struct {
 	room  string
 }
 
-// aliasRoomFingerprint records one scenario's projection of a
-// (alias, room) pair: the roles assigned and where (which scenario
-// file) the projection came from.
-type aliasRoomFingerprint struct {
-	roles    string // canonical sorted comma-joined, for equality compare
-	scenario string // base name of the YAML file
-}
-
 // checkAliasRoomRoleConflicts walks every scenario's memberships,
 // collects per (alias, room) the set of distinct roles-fingerprints,
 // and flags any (alias, room) seen with two or more distinct
@@ -110,8 +102,8 @@ func checkAliasRoomRoleConflicts(scenarios []*Scenario) []error {
 			parts = append(parts, fmt.Sprintf("roles=%s in [%s]", fp, strings.Join(files, ", ")))
 		}
 		errs = append(errs, fmt.Errorf(
-			"cross-scenario cache conflict: (alias=%q, room=%q) declared with DIFFERENT role sets across scenarios — %s. "+
-				"This trips the gatekeeper sub-cache (F-009). Give each scenario a unique room id (see AUTHORING.md §Cross-scenario cache discipline).",
+			"cross-scenario cache conflict: (alias=%q, room=%q) declared with DIFFERENT role sets across scenarios — %s; "+
+				"this trips the gatekeeper sub-cache (F-009) — give each scenario a unique room id (see AUTHORING.md §Cross-scenario cache discipline)",
 			key.alias, key.room, strings.Join(parts, " vs "),
 		))
 	}
@@ -177,8 +169,8 @@ func checkAliasHomeSiteConflicts(scenarios []*Scenario) []error {
 			parts = append(parts, fmt.Sprintf("home_site=%s in [%s]", site, strings.Join(files, ", ")))
 		}
 		errs = append(errs, fmt.Errorf(
-			"cross-scenario cache conflict: alias %q declared with DIFFERENT home sites across scenarios — %s. "+
-				"This trips the worker user-cache (F-009). Rename the alias in one of the scenarios (e.g. `bob_a` vs `bob_b`, or `remotebob` for a remote-stub variant; see AUTHORING.md §Cross-scenario cache discipline).",
+			"cross-scenario cache conflict: alias %q declared with DIFFERENT home sites across scenarios — %s; "+
+				"this trips the worker user-cache (F-009) — rename the alias in one of the scenarios (e.g. `bob_a` vs `bob_b`, or `remotebob` for a remote-stub variant; see AUTHORING.md §Cross-scenario cache discipline)",
 			alias, strings.Join(parts, " vs "),
 		))
 	}

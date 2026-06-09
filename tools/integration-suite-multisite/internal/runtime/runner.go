@@ -131,6 +131,18 @@ func Run(ctx context.Context, cfg *Config) (*RunReport, error) {
 		return nil, fmt.Errorf("find scenarios: %w", err)
 	}
 
+	// Scenario-name uniqueness precheck (plan-ahead §2.8). Subdirectory
+	// nesting under scenarios/drafts/ is allowed, so the `scenario:`
+	// field — perf-history key and menu identity — must still be
+	// unique across the whole tree. Fail loud before booting infra.
+	if dupErrs := loadAndCheckUniqueness(scenarioFiles); len(dupErrs) > 0 {
+		var msgs []string
+		for _, e := range dupErrs {
+			msgs = append(msgs, e.Error())
+		}
+		return nil, fmt.Errorf("scenario-name uniqueness: %s", strings.Join(msgs, "; "))
+	}
+
 	if cfg.Interactive {
 		if err := runMenuLoop(ctx, sess, scenarioFiles); err != nil {
 			return nil, err
@@ -492,6 +504,26 @@ func newRunID() string {
 	var b [2]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
+}
+
+// loadAndCheckUniqueness parses each scenario file just for its name +
+// SourcePath and runs CheckScenarioNameUniqueness. Per-file parse
+// errors are NOT returned — the sweep loop reports those per-scenario
+// via recordCase, so failing the whole run here would obscure them.
+// Only true duplicates (two well-formed files with the same
+// `scenario:`) are returned.
+func loadAndCheckUniqueness(files []string) []error {
+	parsed := make([]*scenario.Scenario, 0, len(files))
+	for _, f := range files {
+		item, err := scenario.LoadFile(f)
+		if err != nil {
+			continue
+		}
+		if s, ok := item.(*scenario.Scenario); ok {
+			parsed = append(parsed, s)
+		}
+	}
+	return scenario.CheckScenarioNameUniqueness(parsed)
 }
 
 func findScenarios(root string) ([]string, error) {

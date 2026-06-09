@@ -31,14 +31,14 @@ import (
 //   - Production WRITE-target collections — covered:
 //     users (auth-service, room-service, room-worker),
 //     rooms (room-service, room-worker, message-gatekeeper read,
-//            inbox-worker, notification-worker read),
+//     inbox-worker, notification-worker read),
 //     subscriptions (room-service, room-worker, inbox-worker,
-//                    message-gatekeeper read, notification-worker read),
+//     message-gatekeeper read, notification-worker read),
 //     room_members (room-service, room-worker),
 //     thread_rooms (message-worker, notification-worker read,
-//                   inbox-worker read),
+//     inbox-worker read),
 //     thread_subscriptions (message-worker, room-service,
-//                           inbox-worker, history-service read).
+//     inbox-worker, history-service read).
 //
 //   - Production READ-only collections — NOT in this set (intentionally):
 //     apps (room-service / search-service: Find/EnsureIndexes only),

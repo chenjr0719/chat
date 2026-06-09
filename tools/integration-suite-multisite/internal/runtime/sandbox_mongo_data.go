@@ -25,12 +25,12 @@ import (
 // contract. Authors don't think about drops; they think about what
 // they can write.
 var mongoDataAllowedCollections = map[string]struct{}{
-	"users":                  {},
-	"rooms":                  {},
-	"subscriptions":          {},
-	"room_members":           {},
-	"thread_rooms":           {},
-	"thread_subscriptions":   {},
+	"users":                {},
+	"rooms":                {},
+	"subscriptions":        {},
+	"room_members":         {},
+	"thread_rooms":         {},
+	"thread_subscriptions": {},
 }
 
 // insertSeededMongoData materializes sb.Scenario.MongoData into the

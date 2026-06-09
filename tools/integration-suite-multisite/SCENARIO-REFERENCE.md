@@ -28,13 +28,33 @@ shape. The key differences are:
 
 ```
 scenarios/
-├── drafts/<name>.yaml          unreviewed; informational in CI
-└── approved/<name>.yaml        promoted via human PR; gates the run
+├── drafts/                     unreviewed; informational in CI
+│   ├── <name>.yaml
+│   └── <group>/<name>.yaml     subdirectories permitted (any depth)
+└── approved/                   promoted via human PR; gates the run
+    ├── <name>.yaml
+    └── <group>/<name>.yaml
 ```
 
-Flat layout — no scope subfolders. One scenario per file. The
-filename (without `.yaml`) should match the `scenario:` field by
-convention.
+One scenario per file. Discovery walks both trees recursively, so
+authors are free to group by service (`messages/`, `rooms/`), by
+phase (`infra-sanity/`, `federation/`), or not at all. CI scoring
+keys off the `status: approved` field, never the directory.
+
+**Uniqueness rule.** The `scenario:` field is the perf-history key
+in `docs/integration-suite-multisite/performance.json` and the
+identity used by the menu / reporter. Two scenarios with the same
+`scenario:` field — even in different subdirectories — is a hard
+loader error at validate and runner startup. Filenames may collide
+across subdirs (they're just paths); `scenario:` names cannot.
+
+The filename (without `.yaml`) should still match the `scenario:`
+field by convention — it makes `vi`-from-failure-report straight-
+forward and keeps cross-references discoverable.
+
+**`pre_fire_scripts:` resolution is unchanged** by nesting. Paths
+resolve relative to the YAML's directory (see §4.5) — co-located
+scripts continue to work at any depth.
 
 ---
 

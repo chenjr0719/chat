@@ -31,6 +31,7 @@ func recordScenario(perf *PerformanceStore, report *RunReport,
 	perf.RecordExecuted(caseID, latest)
 	report.Cases = append(report.Cases, CaseReport{
 		ScenarioName: s.Name,
+		SourcePath:   s.SourcePath,
 		Subset:       "scenario",
 		Status:       v3Status(s),
 		Kind:         s.Tag,

@@ -385,6 +385,27 @@ ad-hoc later.
 Independent of the envelope+DAG direction in §2.3-§3; ship when
 demand arrives.
 
+**Shipped.** `filepath.WalkDir`-based discovery was already in place
+(both `findScenarios` and `LoadAllParsedInDir`), so subdirectory
+nesting under `scenarios/drafts/` works today. Layered on top:
+
+- `scenario.CheckScenarioNameUniqueness` enforces cross-file
+  uniqueness of the `scenario:` field — hard error at validate AND
+  at runner startup (before infra boots). `runtime.loadAndCheckUniqueness`
+  is the runner-side adapter.
+- `ScenarioReport.SourcePath` carries the YAML path through to
+  `renderFailureDetails`, which prints `- file: \`<path>\`` under
+  each failing scenario heading in `last-run.md`.
+- `scenarioRow.relPath` (set from `Cfg.ScenariosDir`) shows the
+  per-row file path in the interactive menu next to the scenario
+  name.
+- `SCENARIO-REFERENCE.md` §1 documents the new layout + uniqueness
+  rule; the prior "flat layout" prohibition is gone.
+
+Path-prefix filtering (`make local SCENARIOS=messages/`) named as
+the natural follow-up is **not yet shipped** — wait for actual
+demand from authors.
+
 ### 2.9 Tool primitives must distinguish broken plumbing from absent observation
 
 A class of bug worth naming explicitly: a poller whose substrate
@@ -711,7 +732,7 @@ Two separate specs were anticipated, each non-trivial:
 | **Multi-site** | Spatial fan-out, NATS supercluster, per-site Mongo, shared Cassandra, federation Sources, `_site` provenance | **Implemented** as `tools/integration-suite-multisite/`. See `docs/integration-suite-multisite-findings.md` for the chat-app-team-facing findings (F-001 OUTBOX owner, F-002 federation topology). Single-site archived at `tools/archived/integration-suite/`. |
 | **Envelope + DAG + chaos engine** | Replace `cases:` with `input: [DAG]` + `expected: {positive,negative}` + `chaos:` loop; per-iteration fresh state | **Not yet specced** — this doc remains the launchpad |
 | **Seed-grammar extensions (T1, T3)** | Concrete in-grammar fixes for room metadata and arbitrary Mongo doc seeding (see §2.7) | **Surfaced; not shipped.** Ship when a scenario demands either. Cheaper than envelope+DAG; independent of it. |
-| **Scenario organization (§2.8)** | Allow arbitrary subdirectory nesting under `scenarios/drafts/` and `scenarios/approved/`; show path in failure reports + interactive menu | **Surfaced; not shipped.** Half-day implementation, no spec needed. Ship when the flat layout starts hurting. |
+| **Scenario organization (§2.8)** | Allow arbitrary subdirectory nesting under `scenarios/drafts/` and `scenarios/approved/`; show path in failure reports + interactive menu | **Shipped.** Recursive discovery + `scenario:`-field uniqueness check (validate + runner startup) + path in `last-run.md` failure detail + path column in interactive menu. Path-prefix filtering is the named follow-up; ship on demand. |
 | **Substrate-error audit (§2.9)** | Drop `//nolint:errcheck` suppressions at substrate boundaries across the six pollers; convert silent failures to loud `slog.Warn` (or hard errors). `logs_tail` done; five more to audit. | **One done; rest pending.** 1-2 hours per remaining poller. Independent of any spec direction. |
 | **Cross-scenario cache isolation (§2.10)** | Tool-side mitigation discipline (unique cache keys per scenario) + optional loader check for duplicate `(account, roomID)` pairs. Pairs with chat-app finding F-009 for the structural fix. | **Discipline named; check not built.** ~15 min for the AUTHORING.md note; ~1 hour for the loader check. Ship when a scenario can't easily route around the discipline. |
 
