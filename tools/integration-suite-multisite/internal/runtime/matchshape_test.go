@@ -10,6 +10,17 @@ import (
 	"github.com/hmchangw/chat/tools/integration-suite-multisite/internal/readers"
 )
 
+// TestMatchShape_SingleEventMatchingExpectedMatches and
+// TestMatchShape_NegatedFailureMessageNamesMatchingEvent (below)
+// together form the regression-guard for the §2.9 corollary in
+// docs/integration-suite-plan-ahead.md — the "matcher must
+// correctly identify a present event under not:true" property the
+// retired `logs-tail-regression-guard-*` YAML scenario was
+// protecting end-to-end. The YAML was deleted (commit f218bd7,
+// tester's cycle commit) because asserting matcher behavior via
+// a perpetually-red scenario was the wrong surface; these Go
+// tests carry the property forward. Do NOT re-introduce the YAML
+// without first deleting these tests.
 func TestMatchShape_SingleEventMatchingExpectedMatches(t *testing.T) {
 	reg := matchers.NewRegistry()
 	m := MatchShape(map[string]any{"status": "accepted"}, reg)
@@ -18,7 +29,7 @@ func TestMatchShape_SingleEventMatchingExpectedMatches(t *testing.T) {
 	}
 	ok, err := m.Match(events)
 	require.NoError(t, err)
-	assert.True(t, ok, "subset shape match must succeed")
+	assert.True(t, ok, "subset shape match must succeed — this true return is what Gomega's ShouldNot flips into a failure under not:true assertions")
 }
 
 func TestMatchShape_ZeroEventsFailsWithPolledZero(t *testing.T) {

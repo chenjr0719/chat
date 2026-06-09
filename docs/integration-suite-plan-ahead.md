@@ -450,6 +450,17 @@ scenarios/drafts/ confusion matrix. A scenario is for "the system
 does X under Y verb fire"; a Go test is for "the matcher returns
 Z when given W input."
 
+*Resolved.* The `logs-tail-regression-guard-not-must-fail-when-line-present`
+YAML was retired in commit `f218bd7` (tester's cycle commit). The
+property it protected — "MatchShape correctly identifies a present
+matching event, and Gomega's ShouldNot flips that into a loud
+failure" — is now carried by
+`internal/runtime/matchshape_test.go::TestMatchShape_SingleEventMatchingExpectedMatches`
+and
+`internal/runtime/matchshape_test.go::TestMatchShape_NegatedFailureMessageNamesMatchingEvent`,
+both with header comments naming the relationship so a future dev
+doesn't re-introduce the YAML.
+
 ### 2.10 Cross-scenario contamination via in-process service caches
 
 A soundness gap surfaced while authoring the large-room cap
