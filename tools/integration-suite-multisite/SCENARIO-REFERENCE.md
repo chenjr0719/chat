@@ -737,6 +737,74 @@ The default (and only) matcher for `expected[].match` is
 For "must NOT happen" assertions, set `not: true` — the loop uses
 `Consistently(...).ShouldNot(...)`.
 
+### 11.1 `outbox_payload:` — decoded inner subset for cross-site events
+
+Cross-site federation events arrive on `OUTBOX_<site>` and
+`INBOX_<site>` wrapped in `pkg/model.OutboxEvent`. The inner event
+is serialized as `[]byte`, which Go's `encoding/json` writes as a
+base64 string on the wire. A normal `body_json:` subset can reach
+the envelope (`type`, `siteId`, `destSiteId`, `timestamp`) but the
+inner content (`roomId`, `newName`, `member_added` fields, …) is
+locked behind the base64.
+
+The `outbox_payload:` directive in a `match:` block tells the
+matcher to base64-decode `body_json.payload`, JSON-parse it, and
+subset-match the decoded inner content against the value:
+
+```yaml
+- location: jetstream_consume
+  site: site-a
+  args:
+    stream: OUTBOX_site-a
+    filter_subject: outbox.site-a.to.site-b.room_renamed
+  match:
+    body_json:
+      type: room_renamed         # envelope assertion (as before)
+      siteId: site-a
+      destSiteId: site-b
+    outbox_payload:              # decoded inner subset
+      roomId: r-shared
+      newName: SharedChannelRenamed
+```
+
+**Semantics.** The matcher splits the expected shape into
+"envelope" (everything except `outbox_payload`) and "directive" (the
+value of `outbox_payload`). For each polled event:
+
+1. Subset-match the envelope against `event.Payload` as usual. If
+   the envelope mismatches, the event is skipped (the directive is
+   NOT evaluated — envelope-level mismatch short-circuits).
+2. If `outbox_payload:` is present, locate
+   `event.Payload.body_json.payload` (must be a string),
+   base64-decode it, JSON-parse the bytes, and subset-match against
+   the directive value.
+3. An event matches iff BOTH halves match.
+
+**Failure reasons.** When the decode pipeline breaks, the
+mismatch reason names the exact stage so the operator can localize
+the producer- or wire-format regression:
+
+- `outbox_payload: body_json is missing or not a map` — poller-
+  shape regression; the event isn't a JSON object at all.
+- `outbox_payload: body_json.payload is missing or not a string` —
+  producer skipped the encode step.
+- `outbox_payload: base64 decode of body_json.payload failed: …` —
+  the payload bytes aren't standard base64.
+- `outbox_payload: JSON parse of decoded payload failed: …` —
+  schema-shape change; the inner format isn't JSON anymore.
+- `outbox_payload: decoded subset mismatch: …` — decode works; the
+  inner fields don't match the expected subset.
+
+**When NOT to use it.** `outbox_payload:` is a one-trick directive
+tuned for the OutboxEvent envelope shape (`body_json.payload` as a
+base64 string). For other base64+JSON shapes — should they emerge
+— add a sibling directive with an explicit `from:` path rather
+than overload `outbox_payload`. For events whose inner content is
+NOT base64-encoded (e.g. plain `ROOMS_<site>` canonical events
+where the body is already JSON), use plain `body_json:` —
+`outbox_payload:` would fail with "body_json.payload missing"
+because the field isn't base64-wrapped to begin with.
+
 ---
 
 ## 12. Common mistakes
