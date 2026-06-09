@@ -444,19 +444,18 @@ fail in similar shape. The `logs_tail` fix added the loud-warning
 discipline at the `cmd.Wait()` boundary; the same audit should be
 done for the other five:
 
-| Poller | Substrate | Possible silent-failure mode |
+| Poller | Substrate | Audit state |
 |---|---|---|
 | `reply` | dispatcher's reply buffer | wrong verb (reply only fires for nats_request) — covered in §7.2 pitfall |
-| `mongo_find` | Mongo driver query | connection error returned as no-match; covered by gocql-style err returns today (unverified) |
-| `cassandra_select` | gocql iter | iter.Close() error ignored — would mask cluster-side error as "no rows" |
-| `jetstream_consume` | js.Stream subscribe | subscribe-error swallowed; consumer-create silent failure |
+| `mongo_find` | Mongo driver query | **not audited.** `cur.Close(ctx) //nolint:errcheck` at `pollers/mongo.go:83` is the next loud-fail target. |
+| `cassandra_select` | gocql iter | **audited + loudened.** `iter.Close()` was already checked; warnings rewritten to name the query/params/decoded row prefix so substrate breakage (down node, missing keyspace, schema drift, bad CQL) is unmistakable in the log — "zero events" warnings explicitly say `NOT 'absent', they are 'never observed'`. |
+| `jetstream_consume` | js.Stream subscribe | **not audited.** subscribe-error and consumer-create paths still need a sweep; `_ = stream.DeleteConsumer(...)` at `readers/jetstream_subject.go:140` is a teardown-only suppress (probably fine but worth confirming). |
 | `nats_subscribe` | core NATS subscribe | subscribe error returned by Warm — already loud, modulo same disciplines as logs_tail |
 | `logs_tail` | docker logs subprocess | **fixed** in 5ee1a74; see commit body for the trail |
 
-Audit + harm-reduction pass: walk the other five pollers, drop
-any `errcheck` suppressions on substrate boundaries, surface
-errors loudly. ~1-2 hours of focused work; independent of any
-spec direction.
+Remaining audit + harm-reduction pass: `mongo_find` and
+`jetstream_consume`. ~1 hour each. Independent of any spec
+direction.
 
 **Test-placement corollary.** When verifying *poller behavior*
 (does the matcher behave correctly with present-vs-absent events

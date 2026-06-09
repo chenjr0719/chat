@@ -93,3 +93,20 @@ func TestBuildCassandraParams_MultipleQuestionMarksNoDefaultBind(t *testing.T) {
 	assert.Nil(t, got, "ambiguous bind context → caller must supply params explicitly")
 	_ = strings.Count
 }
+
+// TestTruncateForLog_NoTruncationWhenShort — preserves short rows as-is
+// so the substrate-error warning carries the raw row when it fits.
+func TestTruncateForLog_NoTruncationWhenShort(t *testing.T) {
+	got := truncateForLog("hello", 200)
+	assert.Equal(t, "hello", got)
+}
+
+// TestTruncateForLog_TruncatesWithMoreSuffix — the substrate-error
+// row_prefix field is bounded; a 1 MiB malformed row must not flood
+// the structured log. Suffix shows how much was dropped so the
+// operator knows it was a giant blob, not a 200-byte parse error.
+func TestTruncateForLog_TruncatesWithMoreSuffix(t *testing.T) {
+	got := truncateForLog(strings.Repeat("x", 250), 200)
+	assert.True(t, strings.HasPrefix(got, strings.Repeat("x", 200)))
+	assert.Contains(t, got, "50 more bytes")
+}
