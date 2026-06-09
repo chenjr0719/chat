@@ -19,18 +19,42 @@ import (
 	"github.com/hmchangw/chat/tools/integration-suite-multisite/internal/seedeffect"
 )
 
-// sandboxOwnedCollections is the set of Mongo collections the sandbox
-// drops at Setup. Matches today's seed.LoadAll scope plus Phase 4.2's
-// room_members (owned by the new insertSeededRooms helper). Future
-// seed-effects that own new collections will extend this — per-effect
-// declaration via SeedEffectDecl.writes_collections is the planned
-// mechanism (Phase 4).
 // sandboxOwnedCollections is the closed set of Mongo collections the
 // sandbox drops between Setup runs so every scenario starts from
 // byte-identical state. Must remain in sync with
 // mongoDataAllowedCollections (sandbox_mongo_data.go) — that const
 // is the seed contract, this is the drop contract; any collection
 // the harness lets a scenario write, it MUST also reset.
+//
+// Audit history (plan-ahead §2.10 collection-side check, complete):
+//
+//   - Production WRITE-target collections — covered:
+//     users (auth-service, room-service, room-worker),
+//     rooms (room-service, room-worker, message-gatekeeper read,
+//            inbox-worker, notification-worker read),
+//     subscriptions (room-service, room-worker, inbox-worker,
+//                    message-gatekeeper read, notification-worker read),
+//     room_members (room-service, room-worker),
+//     thread_rooms (message-worker, notification-worker read,
+//                   inbox-worker read),
+//     thread_subscriptions (message-worker, room-service,
+//                           inbox-worker, history-service read).
+//
+//   - Production READ-only collections — NOT in this set (intentionally):
+//     apps (room-service / search-service: Find/EnsureIndexes only),
+//     bot_cmd_menu (room-service: Find/EnsureIndexes only),
+//     custom_emojis (history-service: Find/EnsureIndexes only).
+//     These are populated by external admin tooling, not by chat-app
+//     services during a normal request cycle; the suite has no need
+//     to truncate them. If a scenario ever needs to seed one, the
+//     write-path discussion repeats — extend BOTH this list and
+//     mongoDataAllowedCollections.
+//
+//   - Latent — NOT yet in this set, intentionally excluded:
+//     room_data_keys (pkg/atrest.CollectionName). Used only when
+//     ATREST_ENABLED=true; the multi-site stack sets it to false
+//     (no Vault). If the suite ever enables at-rest (would require
+//     a Vault container or stub), this collection must be added.
 var sandboxOwnedCollections = []string{
 	"users",
 	"rooms",

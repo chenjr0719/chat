@@ -549,6 +549,25 @@ AUTHORING.md is enough.
 
 Both ship-when-demand-arrives.
 
+**Status update — collection-side check complete.** The plan-ahead
+worklist's "per-collection drop-list audit" item is shipped. A
+chat-app `db.Collection(...)` sweep confirmed `sandboxOwnedCollections`
+covers every collection chat-app services WRITE to in normal
+operation. Three read-only collections (`apps`, `bot_cmd_menu`,
+`custom_emojis`) are intentionally excluded — they're populated by
+external admin tooling, not by chat-app services during a request
+cycle. One latent collection (`room_data_keys` from `pkg/atrest`)
+is excluded today because `ATREST_ENABLED=false` in the multi-site
+stack; if at-rest ever enables, the drop list must extend.
+
+The audit history is recorded verbatim in the `sandboxOwnedCollections`
+comment block (`internal/runtime/sandbox.go`) so a future maintainer
+can re-run the same survey and check for drift.
+
+**Loader-side cache-key check (warn-only)** shipped in `e8bd46b` —
+fires three warnings on the current 23-scenario set. Conversion to
+hard error pending tester-coordinated scenario rename pass.
+
 ---
 
 ## 3. The model these proposals converge to
