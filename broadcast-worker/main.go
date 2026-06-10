@@ -14,6 +14,7 @@ import (
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 	"github.com/Marz32onE/instrumentation-go/otel-nats/otelnats"
 
+	"github.com/hmchangw/chat/pkg/jsretry"
 	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/otelutil"
@@ -185,16 +186,8 @@ func main() {
 					wg.Done()
 				}()
 				handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
-				if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
-					slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
-					if err := msg.Nak(); err != nil {
-						slog.Error("failed to nak message", "error", err)
-					}
-					return
-				}
-				if err := msg.Ack(); err != nil {
-					slog.Error("failed to ack message", "error", err)
-				}
+				// Fan-out is latency-sensitive — short first retry; malformed events Ack-drop.
+				jsretry.Settle(handlerCtx, msg, jsretry.LowLatencyBackoff, handler.HandleMessage(handlerCtx, msg.Data()))
 			}()
 		}
 	}()
