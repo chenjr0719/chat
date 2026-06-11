@@ -25,7 +25,9 @@ import (
 	"github.com/hmchangw/chat/pkg/roomkeymetrics"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 // errPermanent marks non-retryable errors (caller Acks instead of Nak).
@@ -56,8 +58,11 @@ type Handler struct {
 	// at-rest DEK creation for synchronously-created DM rooms (message-worker's
 	// lazy create still covers them). Injected as a field rather than a
 	// constructor arg to avoid churning every NewHandler caller.
-	dekProvisioner   DEKProvisioner
-	keySender        *roomkeysender.Sender
+	dekProvisioner DEKProvisioner
+	keySender      *roomkeysender.Sender
+	// valkey is the L2 (Valkey) client used only to invalidate room metadata
+	// after authoritative writes. nil disables invalidation (best-effort).
+	valkey           valkeyutil.Client
 	keyFanoutWorkers int
 }
 
@@ -70,6 +75,19 @@ func NewHandler(store SubscriptionStore, siteID string, publish PublishFunc, key
 		keySender:        keySender,
 		keyFanoutWorkers: defaultKeyFanoutWorkers,
 	}
+}
+
+// bustRoomMeta best-effort invalidates a room's L2 (Valkey) metadata entry
+// after an authoritative Mongo write to name or userCount. Fail-open: nil
+// client is a no-op, Valkey errors are logged-and-swallowed by BustMeta, and a
+// short timeout ensures a hung Valkey never stalls the room operation.
+func (h *Handler) bustRoomMeta(ctx context.Context, roomID string) {
+	if h.valkey == nil {
+		return
+	}
+	bustCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	roommetacache.BustMeta(bustCtx, h.valkey, roomID)
 }
 
 // publishSubscriptionUpdate fans out the per-user subscription.update event for the FE; best-effort.
@@ -337,6 +355,7 @@ func (h *Handler) processRemoveIndividual(ctx context.Context, req *model.Remove
 	if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
+	h.bustRoomMeta(ctx, req.RoomID)
 
 	// Rotate after delete + reconcile; GetSubscriptionAccounts returns the
 	// post-deletion survivor accounts (projected — fan-out only needs accounts,
@@ -545,6 +564,7 @@ func (h *Handler) processRemoveOrg(ctx context.Context, req *model.RemoveMemberR
 	if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
+	h.bustRoomMeta(ctx, req.RoomID)
 
 	// Rotate only when something was actually deleted; GetSubscriptionAccounts
 	// returns the post-deletion survivor accounts (projected — fan-out only
@@ -967,6 +987,7 @@ func (h *Handler) processAddMembers(ctx context.Context, data []byte) (err error
 	if err := h.store.ReconcileMemberCounts(ctx, req.RoomID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
+	h.bustRoomMeta(ctx, req.RoomID)
 
 	// Publish subscription.update BEFORE room.key so clients have a sub entry to store the key under.
 	for _, sub := range subs {
@@ -1395,6 +1416,7 @@ func (h *Handler) finishCreateRoom(ctx context.Context, req *model.CreateRoomReq
 	if err := h.store.ReconcileMemberCounts(ctx, room.ID); err != nil {
 		return fmt.Errorf("reconcile member counts: %w", err)
 	}
+	h.bustRoomMeta(ctx, room.ID)
 
 	// Task 35: subscription.update fan-out per sub
 	for _, sub := range subs {
@@ -1837,6 +1859,7 @@ func (h *Handler) processRoomRename(ctx context.Context, data []byte) (err error
 	if err = h.store.UpdateSubscriptionNamesForRoom(ctx, req.RoomID, req.NewName); err != nil {
 		return fmt.Errorf("update subscription names: %w", err)
 	}
+	h.bustRoomMeta(ctx, req.RoomID)
 
 	sysData, err := json.Marshal(model.RoomRenamedSysData{NewName: req.NewName, ByAccount: req.Account})
 	if err != nil {

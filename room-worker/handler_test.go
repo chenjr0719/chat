@@ -27,6 +27,7 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/roomkeysender"
 	"github.com/hmchangw/chat/pkg/roomkeystore"
+	"github.com/hmchangw/chat/pkg/roommetacache"
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
@@ -4928,4 +4929,41 @@ func TestProcessRoomRename_ErrorThenOkRetrySequence(t *testing.T) {
 	require.Len(t, asyncResults, 2)
 	assert.Equal(t, model.AsyncJobStatusError, asyncResults[0].Status)
 	assert.Equal(t, model.AsyncJobStatusOK, asyncResults[1].Status)
+}
+
+// --- bustRoomMeta tests ---
+
+type fakeBustClient struct {
+	dels   []string
+	delErr error
+}
+
+func (f *fakeBustClient) Get(context.Context, string) (string, error) { return "", nil }
+func (f *fakeBustClient) Set(context.Context, string, string, time.Duration) error {
+	return nil
+}
+func (f *fakeBustClient) Del(_ context.Context, keys ...string) error {
+	f.dels = append(f.dels, keys...)
+	return f.delErr
+}
+func (f *fakeBustClient) Close() error { return nil }
+
+func TestHandler_bustRoomMeta_CallsDel(t *testing.T) {
+	fake := &fakeBustClient{}
+	h := &Handler{valkey: fake}
+	h.bustRoomMeta(context.Background(), "r123")
+	assert.Equal(t, []string{roommetacache.MetaKey("r123")}, fake.dels)
+}
+
+func TestHandler_bustRoomMeta_NilClient_NoPanic(t *testing.T) {
+	h := &Handler{} // valkey nil
+	assert.NotPanics(t, func() { h.bustRoomMeta(context.Background(), "r123") })
+}
+
+func TestHandler_bustRoomMeta_FailOpen(t *testing.T) {
+	fake := &fakeBustClient{delErr: errors.New("valkey down")}
+	h := &Handler{valkey: fake}
+	assert.NotPanics(t, func() { h.bustRoomMeta(context.Background(), "r123") })
+	// The Del was attempted (error swallowed inside BustMeta), not skipped.
+	assert.Equal(t, []string{roommetacache.MetaKey("r123")}, fake.dels)
 }

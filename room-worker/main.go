@@ -24,6 +24,7 @@ import (
 	"github.com/hmchangw/chat/pkg/shutdown"
 	"github.com/hmchangw/chat/pkg/stream"
 	"github.com/hmchangw/chat/pkg/subject"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 type config struct {
@@ -111,6 +112,13 @@ func main() {
 		slog.Error("valkey connect failed", "error", err)
 		os.Exit(1)
 	}
+
+	metaValkey, err := valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
+	if err != nil {
+		slog.Error("valkey connect (room-meta L2 invalidation) failed", "error", err)
+		os.Exit(1)
+	}
+
 	keySender := roomkeysender.NewSender(nc.NatsConn())
 
 	// Eager at-rest DEK provisioning for synchronously-created DM rooms (the
@@ -149,6 +157,7 @@ func main() {
 	}, keyStore, keySender)
 	handler.SetKeyFanoutWorkers(cfg.KeyFanoutWorkers)
 	handler.dekProvisioner = dekProvisioner
+	handler.valkey = metaValkey
 
 	router := natsrouter.New(nc, "room-worker")
 	router.Use(natsrouter.Recovery(), natsrouter.RequestID(), natsrouter.Logging())
@@ -215,6 +224,7 @@ func main() {
 		func(ctx context.Context) error { return nc.Drain() },
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
 		func(ctx context.Context) error { return keyStore.Close() },
+		func(_ context.Context) error { valkeyutil.Disconnect(metaValkey); return nil },
 		func(context.Context) error {
 			if vaultWrapper != nil {
 				return vaultWrapper.Close()
