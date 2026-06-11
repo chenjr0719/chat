@@ -6,10 +6,12 @@
 // load. This package centralizes the cache so message-gatekeeper and
 // broadcast-worker share a uniform shape and behavior.
 //
-// Freshness is TTL-bounded. There is no active invalidation in v1 — see
-// the spec at
-// docs/superpowers/specs/2026-05-18-message-pipeline-mongo-caching-design.md
-// for rationale.
+// Freshness is TTL-bounded at L1. An L2 (Valkey) tier (see valkey.go:
+// ReadThrough / BustMeta) is shared across replicas and survives restarts;
+// room-worker actively busts the L2 entry on writes to name/userCount. The
+// L1 LRU remains TTL-only — Invalidate exists but the cross-process bust is
+// L2-scoped, so L1 staleness is bounded by ROOM_META_CACHE_TTL. See the spec
+// at docs/superpowers/specs/2026-05-18-message-pipeline-mongo-caching-design.md.
 package roommetacache
 
 import (
@@ -29,13 +31,13 @@ import (
 
 // Meta is the cached projection of a room document. Both consumers
 // (gatekeeper and broadcast-worker) use these four fields and nothing
-// else from the room.
+// else from the room. The json tags pin the L2 (Valkey) wire format.
 type Meta struct {
-	ID        string
-	Type      model.RoomType
-	Name      string
-	SiteID    string
-	UserCount int
+	ID        string         `json:"id"`
+	Type      model.RoomType `json:"type"`
+	Name      string         `json:"name"`
+	SiteID    string         `json:"siteId"`
+	UserCount int            `json:"userCount"`
 }
 
 // Loader fetches a fresh Meta for the given roomID. The cache calls
