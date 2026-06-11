@@ -18,6 +18,8 @@ services:
       # entries are tiny so per-pod memory stays in the low MB.
       - USER_CACHE_SIZE=10000
       - USER_CACHE_TTL=5m
+      - VALKEY_ADDRS=valkey:6379
+      - ROOM_META_L2_TTL=15m
       - BOOTSTRAP_STREAMS=true
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro

@@ -4,23 +4,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/roommetacache"
+	"github.com/hmchangw/chat/pkg/valkeyutil"
 )
 
 type MongoStore struct {
 	subscriptions *mongo.Collection
 	rooms         *mongo.Collection
+	valkey        valkeyutil.Client // nil disables the L2 tier (pure Mongo)
+	metaTTL       time.Duration
 }
 
-func NewMongoStore(db *mongo.Database) *MongoStore {
+func NewMongoStore(db *mongo.Database, valkey valkeyutil.Client, metaTTL time.Duration) *MongoStore {
 	return &MongoStore{
 		subscriptions: db.Collection("subscriptions"),
 		rooms:         db.Collection("rooms"),
+		valkey:        valkey,
+		metaTTL:       metaTTL,
 	}
 }
 
@@ -37,5 +43,5 @@ func (s *MongoStore) GetSubscription(ctx context.Context, account, roomID string
 }
 
 func (s *MongoStore) GetRoomMeta(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-	return roommetacache.FetchFromMongo(ctx, s.rooms, roomID)
+	return roommetacache.ReadThrough(ctx, s.valkey, s.rooms, roomID, s.metaTTL)
 }
