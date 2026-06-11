@@ -24,11 +24,11 @@ type InboxStore interface {
 	// stored one is a silent no-op, so out-of-order federated delivery cannot
 	// regress room metadata.
 	UpsertRoom(ctx context.Context, room *model.Room) error
-	// UpdateSubscriptionRoles applies roles guarded by eventTs (the source
+	// UpdateSubscriptionRoles applies roles guarded by rolesUpdatedAt (the source
 	// event's publish time): older/duplicate events are silent no-ops. A
 	// genuinely missing subscription still returns an error so the event is
 	// redelivered until member_added lands (federation race).
-	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role, eventTs int64) error
+	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role, rolesUpdatedAt time.Time) error
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 	// UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
@@ -40,10 +40,10 @@ type InboxStore interface {
 	UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error
 	// ApplyThreadRead writes ThreadSubscription under a $lt lastSeenAt guard, then the Subscription only if the guard accepted.
 	ApplyThreadRead(ctx context.Context, roomID, threadRoomID, account string, newThreadUnread []string, alert bool, lastSeenAt time.Time) error
-	// UpdateSubscriptionMute sets muted by (roomID, account), guarded by eventTs
-	// (the source event's publish time): older/duplicate events are silent
-	// no-ops. Missing-sub is also a silent no-op for federation races.
-	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool, eventTs int64) error
+	// UpdateSubscriptionMute sets muted by (roomID, account), guarded by
+	// muteUpdatedAt (the source event's publish time): older/duplicate events
+	// are silent no-ops. Missing-sub is also a silent no-op for federation races.
+	UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool, muteUpdatedAt time.Time) error
 	// UpdateSubscriptionFavorite silently no-ops on missing-sub (federation race — user left mid-flight).
 	UpdateSubscriptionFavorite(ctx context.Context, roomID, account string, favorite bool) error
 	// UpdateSubscriptionNamesForRoom sets name on every subscription in the room.
@@ -216,7 +216,7 @@ func (h *Handler) handleRoleUpdated(ctx context.Context, evt *model.OutboxEvent)
 			"account", account, "room_id", roomID)
 		return errcode.Permanent(errcode.BadRequest("role_updated event has empty roles"))
 	}
-	if err := h.store.UpdateSubscriptionRoles(ctx, account, roomID, roles, subEvt.Timestamp); err != nil {
+	if err := h.store.UpdateSubscriptionRoles(ctx, account, roomID, roles, time.UnixMilli(subEvt.Timestamp).UTC()); err != nil {
 		return fmt.Errorf("update subscription roles: %w", err)
 	}
 	return nil
@@ -243,7 +243,7 @@ func (h *Handler) handleSubscriptionMuteToggled(ctx context.Context, evt *model.
 	if err := json.Unmarshal(evt.Payload, &e); err != nil {
 		return fmt.Errorf("unmarshal subscription_mute_toggled payload: %w", err)
 	}
-	if err := h.store.UpdateSubscriptionMute(ctx, e.RoomID, e.Account, e.Muted, e.Timestamp); err != nil {
+	if err := h.store.UpdateSubscriptionMute(ctx, e.RoomID, e.Account, e.Muted, time.UnixMilli(e.Timestamp).UTC()); err != nil {
 		return fmt.Errorf("update subscription mute for %q in room %q: %w", e.Account, e.RoomID, err)
 	}
 	return nil

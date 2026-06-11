@@ -21,17 +21,17 @@ import (
 // --- In-memory InboxStore stub ---
 
 type roleUpdate struct {
-	account string
-	roomID  string
-	roles   []model.Role
-	eventTs int64
+	account   string
+	roomID    string
+	roles     []model.Role
+	updatedAt time.Time
 }
 
 type muteUpdate struct {
-	roomID  string
-	account string
-	muted   bool
-	eventTs int64
+	roomID    string
+	account   string
+	muted     bool
+	updatedAt time.Time
 }
 
 type subRead struct {
@@ -121,10 +121,10 @@ func (s *stubInboxStore) getRooms() []model.Room {
 	return cp
 }
 
-func (s *stubInboxStore) UpdateSubscriptionRoles(_ context.Context, account, roomID string, roles []model.Role, eventTs int64) error {
+func (s *stubInboxStore) UpdateSubscriptionRoles(_ context.Context, account, roomID string, roles []model.Role, rolesUpdatedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.roleUpdates = append(s.roleUpdates, roleUpdate{account: account, roomID: roomID, roles: roles, eventTs: eventTs})
+	s.roleUpdates = append(s.roleUpdates, roleUpdate{account: account, roomID: roomID, roles: roles, updatedAt: rolesUpdatedAt})
 	return nil
 }
 
@@ -165,10 +165,10 @@ func (s *stubInboxStore) BulkCreateSubscriptions(_ context.Context, subs []*mode
 	return nil
 }
 
-func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, account string, muted bool, eventTs int64) error {
+func (s *stubInboxStore) UpdateSubscriptionMute(_ context.Context, roomID, account string, muted bool, muteUpdatedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.muteUpdates = append(s.muteUpdates, muteUpdate{roomID: roomID, account: account, muted: muted, eventTs: eventTs})
+	s.muteUpdates = append(s.muteUpdates, muteUpdate{roomID: roomID, account: account, muted: muted, updatedAt: muteUpdatedAt})
 	for i := range s.subscriptions {
 		if s.subscriptions[i].RoomID == roomID && s.subscriptions[i].User.Account == account {
 			s.subscriptions[i].Muted = muted
@@ -789,8 +789,8 @@ func TestHandleEvent_RoleUpdated(t *testing.T) {
 	}
 	// The handler must forward the payload's event timestamp so the store can
 	// guard against out-of-order/stale role_updated events.
-	if updates[0].eventTs != 1735689600000 {
-		t.Errorf("role update eventTs = %d, want 1735689600000", updates[0].eventTs)
+	if updates[0].updatedAt.UnixMilli() != 1735689600000 {
+		t.Errorf("role update updatedAt = %d ms, want 1735689600000", updates[0].updatedAt.UnixMilli())
 	}
 	// No SubscriptionUpdateEvent publish — room-worker already handles that via NATS supercluster
 }
@@ -1393,7 +1393,7 @@ func TestHandler_SubscriptionMuteToggled(t *testing.T) {
 	// guard against out-of-order/stale mute toggles.
 	updates := store.getMuteUpdates()
 	require.Len(t, updates, 1)
-	assert.Equal(t, int64(12345), updates[0].eventTs)
+	assert.Equal(t, int64(12345), updates[0].updatedAt.UnixMilli())
 }
 
 func TestHandler_SubscriptionMuteToggled_MissingSubscriptionNoOp(t *testing.T) {

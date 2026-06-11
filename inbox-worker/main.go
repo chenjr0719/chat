@@ -80,23 +80,23 @@ func (s *mongoInboxStore) UpsertRoom(ctx context.Context, room *model.Room) erro
 	return nil
 }
 
-// UpdateSubscriptionRoles applies roles under a rolesEventTs guard so an
+// UpdateSubscriptionRoles applies roles under a rolesUpdatedAt guard so an
 // out-of-order or duplicate role_updated cannot regress roles. A MatchedCount
 // of 0 is ambiguous — either the subscription is missing (federation race:
 // surface an error so the event is redelivered until member_added lands) or
-// the guard rejected a stale event (the sub exists with rolesEventTs >= the
+// the guard rejected a stale event (the sub exists with rolesUpdatedAt >= the
 // incoming one — a silent no-op). One existence check on this cold path
 // disambiguates the two.
-func (s *mongoInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role, eventTs int64) error {
+func (s *mongoInboxStore) UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role, rolesUpdatedAt time.Time) error {
 	filter := bson.M{
 		"u.account": account,
 		"roomId":    roomID,
 		"$or": bson.A{
-			bson.M{"rolesEventTs": bson.M{"$exists": false}},
-			bson.M{"rolesEventTs": bson.M{"$lt": eventTs}},
+			bson.M{"rolesUpdatedAt": bson.M{"$exists": false}},
+			bson.M{"rolesUpdatedAt": bson.M{"$lt": rolesUpdatedAt}},
 		},
 	}
-	update := bson.M{"$set": bson.M{"roles": roles, "rolesEventTs": eventTs}}
+	update := bson.M{"$set": bson.M{"roles": roles, "rolesUpdatedAt": rolesUpdatedAt}}
 	res, err := s.subCol.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return fmt.Errorf("update subscription roles for %q in room %q: %w", account, roomID, err)
@@ -175,20 +175,20 @@ func (s *mongoInboxStore) BulkCreateSubscriptions(ctx context.Context, subs []*m
 	return nil
 }
 
-// UpdateSubscriptionMute sets muted by (roomID, account) under a muteEventTs
+// UpdateSubscriptionMute sets muted by (roomID, account) under a muteUpdatedAt
 // guard so an out-of-order or duplicate toggle cannot regress mute state.
 // Missing-sub and guard-rejected events both leave MatchedCount 0 and are
 // silent no-ops.
-func (s *mongoInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool, eventTs int64) error {
+func (s *mongoInboxStore) UpdateSubscriptionMute(ctx context.Context, roomID, account string, muted bool, muteUpdatedAt time.Time) error {
 	filter := bson.M{
 		"roomId":    roomID,
 		"u.account": account,
 		"$or": bson.A{
-			bson.M{"muteEventTs": bson.M{"$exists": false}},
-			bson.M{"muteEventTs": bson.M{"$lt": eventTs}},
+			bson.M{"muteUpdatedAt": bson.M{"$exists": false}},
+			bson.M{"muteUpdatedAt": bson.M{"$lt": muteUpdatedAt}},
 		},
 	}
-	update := bson.M{"$set": bson.M{"muted": muted, "muteEventTs": eventTs}}
+	update := bson.M{"$set": bson.M{"muted": muted, "muteUpdatedAt": muteUpdatedAt}}
 	if _, err := s.subCol.UpdateOne(ctx, filter, update); err != nil {
 		return fmt.Errorf("update subscription mute for %q in room %q: %w", account, roomID, err)
 	}

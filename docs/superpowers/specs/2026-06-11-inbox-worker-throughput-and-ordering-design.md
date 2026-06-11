@@ -119,11 +119,14 @@ last-seen guard; this extends the same idiom to the remaining mutable
 | Handler                        | Write                                  | Guard field    | Rule                                              |
 |--------------------------------|----------------------------------------|----------------|---------------------------------------------------|
 | `room_sync`                    | room metadata `$set`                   | `updatedAt`    | apply only if event `UpdatedAt` > stored          |
-| `role_updated`                 | subscription roles `$set`              | `rolesEventTs` | apply only if event timestamp > stored            |
-| `subscription_mute_toggled`    | subscription `muted` `$set`            | `muteEventTs`  | apply only if event timestamp > stored            |
+| `role_updated`                 | subscription roles `$set`              | `rolesUpdatedAt` | apply only if event timestamp > stored          |
+| `subscription_mute_toggled`    | subscription `muted` `$set`            | `muteUpdatedAt`  | apply only if event timestamp > stored          |
 
-The guard timestamp is the source event's publish time, threaded from the
-event into the store method (e.g. `UpdateSubscriptionMute(..., eventTs)`).
+The guard timestamp is the source event's publish time — the event's
+`Timestamp` (epoch millis) converted to a `time.Time` via `time.UnixMilli`
+so it matches the codebase's other Mongo time fields (`lastSeenAt`, room
+`updatedAt`) — threaded from the event into the store method (e.g.
+`UpdateSubscriptionMute(..., muteUpdatedAt)`).
 Older or duplicate events are silent no-ops; a genuinely missing
 subscription is also a silent no-op (federation race — the user may have
 left mid-flight), except `role_updated`, which returns an error so the
@@ -131,7 +134,7 @@ event is redelivered until `member_added` lands.
 
 ### No schema migration
 
-The guard fields (`updatedAt`/`rolesEventTs`/`muteEventTs`) are seeded
+The guard fields (`updatedAt`/`rolesUpdatedAt`/`muteUpdatedAt`) are seeded
 lazily: the guard treats a missing field (`$exists: false`) as "older than
 any event," so existing documents accept the first write and adopt the
 field. No backfill is required.

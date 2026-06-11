@@ -1051,12 +1051,12 @@ func TestInbox_UpdateSubscriptionRoles_OutOfOrderSkipped(t *testing.T) {
 	// Seed a sub whose roles were last set by a newer event (ts=200).
 	_, err := store.subCol.InsertOne(ctx, bson.M{
 		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
-		"roles": []model.Role{model.RoleOwner}, "rolesEventTs": int64(200),
+		"roles": []model.Role{model.RoleOwner}, "rolesUpdatedAt": time.UnixMilli(200).UTC(),
 	})
 	require.NoError(t, err)
 
 	// An older role_updated (ts=100) must be a silent no-op.
-	require.NoError(t, store.UpdateSubscriptionRoles(ctx, "alice", "r1", []model.Role{model.RoleMember}, 100))
+	require.NoError(t, store.UpdateSubscriptionRoles(ctx, "alice", "r1", []model.Role{model.RoleMember}, time.UnixMilli(100).UTC()))
 
 	var got model.Subscription
 	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
@@ -1069,11 +1069,11 @@ func TestInbox_UpdateSubscriptionRoles_NewerApplies(t *testing.T) {
 
 	_, err := store.subCol.InsertOne(ctx, bson.M{
 		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
-		"roles": []model.Role{model.RoleMember}, "rolesEventTs": int64(100),
+		"roles": []model.Role{model.RoleMember}, "rolesUpdatedAt": time.UnixMilli(100).UTC(),
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, store.UpdateSubscriptionRoles(ctx, "alice", "r1", []model.Role{model.RoleOwner}, 200))
+	require.NoError(t, store.UpdateSubscriptionRoles(ctx, "alice", "r1", []model.Role{model.RoleOwner}, time.UnixMilli(200).UTC()))
 
 	var got model.Subscription
 	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
@@ -1086,7 +1086,7 @@ func TestInbox_UpdateSubscriptionRoles_MissingSubscriptionErrors(t *testing.T) {
 
 	// No subscription seeded — a genuinely missing sub must still error so the
 	// event is redelivered until member_added lands (federation race).
-	err := store.UpdateSubscriptionRoles(ctx, "ghost", "r1", []model.Role{model.RoleMember}, 100)
+	err := store.UpdateSubscriptionRoles(ctx, "ghost", "r1", []model.Role{model.RoleMember}, time.UnixMilli(100).UTC())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "subscription not found")
 }
@@ -1098,12 +1098,12 @@ func TestInbox_UpdateSubscriptionMute_OutOfOrderSkipped(t *testing.T) {
 	// Sub last muted=false by a newer event (ts=200).
 	_, err := store.subCol.InsertOne(ctx, bson.M{
 		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
-		"muted": false, "muteEventTs": int64(200),
+		"muted": false, "muteUpdatedAt": time.UnixMilli(200).UTC(),
 	})
 	require.NoError(t, err)
 
 	// An older toggle (ts=100) must not regress mute state.
-	require.NoError(t, store.UpdateSubscriptionMute(ctx, "r1", "alice", true, 100))
+	require.NoError(t, store.UpdateSubscriptionMute(ctx, "r1", "alice", true, time.UnixMilli(100).UTC()))
 
 	var got model.Subscription
 	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
@@ -1116,11 +1116,11 @@ func TestInbox_UpdateSubscriptionMute_NewerApplies(t *testing.T) {
 
 	_, err := store.subCol.InsertOne(ctx, bson.M{
 		"_id": "s1", "roomId": "r1", "u": bson.M{"account": "alice"},
-		"muted": false, "muteEventTs": int64(100),
+		"muted": false, "muteUpdatedAt": time.UnixMilli(100).UTC(),
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, store.UpdateSubscriptionMute(ctx, "r1", "alice", true, 200))
+	require.NoError(t, store.UpdateSubscriptionMute(ctx, "r1", "alice", true, time.UnixMilli(200).UTC()))
 
 	var got model.Subscription
 	require.NoError(t, store.subCol.FindOne(ctx, bson.M{"_id": "s1"}).Decode(&got))
