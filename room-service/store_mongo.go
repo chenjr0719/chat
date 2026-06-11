@@ -932,10 +932,13 @@ func (s *MongoStore) findOneAndUpdateSub(ctx context.Context, roomID, account, o
 }
 
 // ToggleSubscriptionMute flips muted. $ifNull treats an absent field as false so
-// legacy docs toggle to true on first call.
-func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string) (*model.Subscription, error) {
+// legacy docs toggle to true on first call. muteUpdatedAt is stamped from the same
+// instant the caller publishes as the event timestamp, keeping the origin doc and
+// every federated replica on one high-water mark.
+func (s *MongoStore) ToggleSubscriptionMute(ctx context.Context, roomID, account string, muteUpdatedAt time.Time) (*model.Subscription, error) {
 	return s.findOneAndUpdateSub(ctx, roomID, account, "toggle mute", bson.M{
-		"muted": bson.M{"$not": bson.A{bson.M{"$ifNull": bson.A{"$muted", false}}}},
+		"muted":         bson.M{"$not": bson.A{bson.M{"$ifNull": bson.A{"$muted", false}}}},
+		"muteUpdatedAt": muteUpdatedAt,
 	})
 }
 
@@ -950,7 +953,9 @@ func (s *MongoStore) ToggleSubscriptionFavorite(ctx context.Context, roomID, acc
 // SetOwnerRole atomically grants or revokes the owner role, returning the updated
 // subscription. Promote appends "owner" only when absent; demote filters "owner"
 // out. Any other roles (e.g. "member") are preserved and array order stays stable.
-func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool) (*model.Subscription, error) {
+// rolesUpdatedAt is stamped from the same instant the caller publishes as the event
+// timestamp, keeping the origin doc and every federated replica on one high-water mark.
+func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, makeOwner bool, rolesUpdatedAt time.Time) (*model.Subscription, error) {
 	currentRoles := bson.M{"$ifNull": bson.A{"$roles", bson.A{}}}
 	var rolesExpr bson.M
 	if makeOwner {
@@ -973,7 +978,10 @@ func (s *MongoStore) SetOwnerRole(ctx context.Context, roomID, account string, m
 			"else": bson.M{"$concatArrays": bson.A{withoutOwner, bson.A{model.RoleMember}}},
 		}}
 	}
-	return s.findOneAndUpdateSub(ctx, roomID, account, "set owner role", bson.M{"roles": rolesExpr})
+	return s.findOneAndUpdateSub(ctx, roomID, account, "set owner role", bson.M{
+		"roles":          rolesExpr,
+		"rolesUpdatedAt": rolesUpdatedAt,
+	})
 }
 
 // GetUserSiteID looks up users.siteId by account. Returns ("", nil) if no

@@ -53,7 +53,7 @@ func TestHandler_UpdateRole_Success(t *testing.T) {
 			HasIndividualMembership: true,
 		}, nil)
 	store.EXPECT().
-		SetOwnerRole(gomock.Any(), "r1", "bob", true).
+		SetOwnerRole(gomock.Any(), "r1", "bob", true, gomock.Any()).
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "bob").
@@ -229,7 +229,7 @@ func TestHandler_UpdateRole_PromoteSubscriptionOnly_NoRoomMembers_Allowed(t *tes
 			HasOrgMembership:        false,
 		}, nil)
 	store.EXPECT().
-		SetOwnerRole(gomock.Any(), "r1", "bob", true).
+		SetOwnerRole(gomock.Any(), "r1", "bob", true, gomock.Any()).
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
 	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-a", nil)
 
@@ -259,7 +259,7 @@ func TestHandler_UpdateRole_Demote_Success(t *testing.T) {
 			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}},
 			HasIndividualMembership: true,
 		}, nil)
-	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", false).
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", false, gomock.Any()).
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}}, nil)
 	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-a", nil)
 
@@ -298,7 +298,12 @@ func TestHandler_UpdateRole_CrossSiteOutbox(t *testing.T) {
 			HasIndividualMembership: true,
 		}, nil)
 	updated := &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}
-	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).Return(updated, nil)
+	var roleTs time.Time
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _, _ string, _ bool, ts time.Time) (*model.Subscription, error) {
+			roleTs = ts
+			return updated, nil
+		})
 	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-b", nil)
 
 	var outboxSubj string
@@ -327,6 +332,11 @@ func TestHandler_UpdateRole_CrossSiteOutbox(t *testing.T) {
 	var evt model.SubscriptionUpdateEvent
 	require.NoError(t, json.Unmarshal(outbox.Payload, &evt))
 	assert.Equal(t, []model.Role{model.RoleMember, model.RoleOwner}, evt.Subscription.Roles)
+	// The origin doc's rolesUpdatedAt and the published event timestamp must be the
+	// same instant so remote replicas guard against one high-water mark.
+	assert.False(t, roleTs.IsZero())
+	assert.Equal(t, roleTs.UnixMilli(), outbox.Timestamp)
+	assert.Equal(t, roleTs.UnixMilli(), evt.Timestamp)
 }
 
 func TestHandler_UpdateRole_SetOwnerRoleNotFound(t *testing.T) {
@@ -342,7 +352,7 @@ func TestHandler_UpdateRole_SetOwnerRoleNotFound(t *testing.T) {
 			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
 			HasIndividualMembership: true,
 		}, nil)
-	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true, gomock.Any()).
 		Return(nil, fmt.Errorf("set owner role: %w", model.ErrSubscriptionNotFound))
 
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
@@ -376,7 +386,7 @@ func TestHandler_UpdateRole_PublishCoreError_NonFatal(t *testing.T) {
 			Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
 			HasIndividualMembership: true,
 		}, nil)
-	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true, gomock.Any()).
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
 	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-a", nil)
 
@@ -552,7 +562,7 @@ func TestHandler_UpdateRole_PublishError(t *testing.T) {
 		Subscription:            &model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember}},
 		HasIndividualMembership: true,
 	}, nil)
-	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true).
+	store.EXPECT().SetOwnerRole(gomock.Any(), "r1", "bob", true, gomock.Any()).
 		Return(&model.Subscription{User: model.SubscriptionUser{ID: "u2", Account: "bob"}, RoomID: "r1", Roles: []model.Role{model.RoleMember, model.RoleOwner}}, nil)
 	store.EXPECT().GetUserSiteID(gomock.Any(), "bob").Return("site-b", nil)
 	h := &Handler{store: store, siteID: "site-a", maxRoomSize: 1000,
@@ -3621,15 +3631,19 @@ func TestHandler_MuteToggle_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
+	var muteTs time.Time
 	store.EXPECT().
-		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
-		Return(&model.Subscription{
-			ID:     "s1",
-			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID: "r1",
-			SiteID: "site-a",
-			Muted:  true,
-		}, nil)
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _, _ string, ts time.Time) (*model.Subscription, error) {
+			muteTs = ts
+			return &model.Subscription{
+				ID:     "s1",
+				User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+				RoomID: "r1",
+				SiteID: "site-a",
+				Muted:  true,
+			}, nil
+		})
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
 		Return("site-a", nil) // same site → no outbox publish
@@ -3667,6 +3681,10 @@ func TestHandler_MuteToggle_Success(t *testing.T) {
 	assert.Equal(t, "mute_toggled", evt.Action)
 	assert.True(t, evt.Subscription.Muted)
 	assert.Equal(t, "alice", evt.Subscription.User.Account)
+	// The origin doc's muteUpdatedAt and the published event timestamp must be the
+	// same instant so remote replicas guard against one high-water mark.
+	assert.False(t, muteTs.IsZero())
+	assert.Equal(t, muteTs.UnixMilli(), evt.Timestamp)
 
 	// Canonical room-stream event for notification-worker cache invalidation.
 	require.Len(t, streamSubjects, 1)
@@ -3684,7 +3702,7 @@ func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(&model.Subscription{
 			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
 			RoomID: "r1",
@@ -3731,7 +3749,7 @@ func TestHandler_MuteToggle_NotRoomMember(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(nil, model.ErrSubscriptionNotFound)
 
 	h := &Handler{
@@ -3749,7 +3767,7 @@ func TestHandler_MuteToggle_StoreError(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(nil, fmt.Errorf("db down"))
 
 	h := &Handler{
@@ -3767,7 +3785,7 @@ func TestHandler_MuteToggle_GetUserSiteIDError(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(&model.Subscription{
 			User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
 		}, nil)
@@ -3793,7 +3811,7 @@ func TestHandler_MuteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(&model.Subscription{
 			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
 			RoomID: "r1",
@@ -4485,7 +4503,7 @@ func TestHandler_MuteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionMute(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionMute(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(&model.Subscription{
 			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
 			RoomID: "r1",

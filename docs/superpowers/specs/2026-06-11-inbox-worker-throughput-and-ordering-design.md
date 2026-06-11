@@ -132,6 +132,15 @@ subscription is also a silent no-op (federation race — the user may have
 left mid-flight), except `role_updated`, which returns an error so the
 event is redelivered until `member_added` lands.
 
+For the guard to be consistent across sites, the **origin** site stamps the
+same value. `room-service` computes one `now := time.Now().UTC()` per RPC,
+writes it to the local subscription's `rolesUpdatedAt`/`muteUpdatedAt` (via
+`SetOwnerRole(..., now)` / `ToggleSubscriptionMute(..., now)`), and publishes
+that same instant as the event `Timestamp`. The origin doc and every remote
+replica therefore converge on one high-water mark — without this, the origin
+write would carry no guard field and a later federated event from another
+site could regress it.
+
 ### No schema migration
 
 The guard fields (`updatedAt`/`rolesUpdatedAt`/`muteUpdatedAt`) are seeded

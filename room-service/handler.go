@@ -706,7 +706,11 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 			return nil, errCannotDemoteLast
 		}
 	}
-	sub, err := h.store.SetOwnerRole(ctx, roomID, req.Account, req.NewRole == model.RoleOwner)
+	// One instant shared by the origin write and the published event: the doc's
+	// rolesUpdatedAt must equal the event timestamp so remote replicas guard against
+	// the same high-water mark.
+	now := time.Now().UTC()
+	sub, err := h.store.SetOwnerRole(ctx, roomID, req.Account, req.NewRole == model.RoleOwner, now)
 	if err != nil {
 		if errors.Is(err, model.ErrSubscriptionNotFound) {
 			return nil, errTargetNotMember // defensive: target removed between validation and mutate
@@ -714,7 +718,6 @@ func (h *Handler) updateRole(c *natsrouter.Context, req model.UpdateRoleRequest)
 		return nil, fmt.Errorf("set owner role: %w", err)
 	}
 
-	now := time.Now().UTC()
 	subEvtData, err := h.publishSubscriptionUpdate(ctx, req.Account, "role_updated", sub, now)
 	if err != nil {
 		return nil, err
@@ -1697,15 +1700,17 @@ func (h *Handler) muteToggle(c *natsrouter.Context) (*model.MuteToggleResponse, 
 		)
 	}
 
-	sub, err := h.store.ToggleSubscriptionMute(ctx, roomID, account)
+	// One instant shared by the origin write and the published event: the doc's
+	// muteUpdatedAt must equal the event timestamp so remote replicas guard against
+	// the same high-water mark.
+	now := time.Now().UTC()
+	sub, err := h.store.ToggleSubscriptionMute(ctx, roomID, account, now)
 	if err != nil {
 		if errors.Is(err, model.ErrSubscriptionNotFound) {
 			return nil, errNotRoomMember
 		}
 		return nil, fmt.Errorf("toggle subscription mute: %w", err)
 	}
-
-	now := time.Now().UTC()
 
 	if _, err := h.publishSubscriptionUpdate(ctx, account, "mute_toggled", sub, now); err != nil {
 		return nil, err
