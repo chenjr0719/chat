@@ -42,6 +42,7 @@ type config struct {
 	PushRecipientBatchSize int                     `env:"PUSH_RECIPIENT_BATCH_SIZE" envDefault:"100"`
 	RoomMetaCacheSize      int                     `env:"ROOM_META_CACHE_SIZE"      envDefault:"10000"`
 	RoomMetaCacheTTL       time.Duration           `env:"ROOM_META_CACHE_TTL"       envDefault:"2m"`
+	RoomMetaL2TTL          time.Duration           `env:"ROOM_META_L2_TTL"          envDefault:"15m"`
 	ValkeyAddrs            []string                `env:"VALKEY_ADDRS"              envSeparator:","`
 	ValkeyPassword         string                  `env:"VALKEY_PASSWORD"           envDefault:""`
 	RoomSubCacheTTL        time.Duration           `env:"ROOMSUBCACHE_TTL"          envDefault:"5m"`
@@ -138,20 +139,21 @@ func main() {
 	threadRoomCol := db.Collection("thread_rooms")
 	roomsCol := db.Collection("rooms")
 
+	valkeyClient, err := valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
+	if err != nil {
+		slog.Error("valkey connect failed", "error", err)
+		os.Exit(1)
+	}
+
 	roomMetaCache, err := roommetacache.New(cfg.RoomMetaCacheSize, cfg.RoomMetaCacheTTL,
 		func(ctx context.Context, roomID string) (roommetacache.Meta, error) {
-			return roommetacache.FetchFromMongo(ctx, roomsCol, roomID)
+			return roommetacache.ReadThrough(ctx, valkeyClient, roomsCol, roomID, cfg.RoomMetaL2TTL)
 		})
 	if err != nil {
 		slog.Error("init room-meta cache failed", "error", err)
 		os.Exit(1)
 	}
 
-	valkeyClient, err := valkeyutil.ConnectCluster(ctx, cfg.ValkeyAddrs, cfg.ValkeyPassword)
-	if err != nil {
-		slog.Error("valkey connect failed", "error", err)
-		os.Exit(1)
-	}
 	cache := roomsubcache.NewValkeyCache(valkeyClient)
 	loader := &mongoMemberLoader{col: subCol}
 	memberLookup := newCachedMemberLookup(cache, loader.Load, cfg.RoomSubCacheTTL)
