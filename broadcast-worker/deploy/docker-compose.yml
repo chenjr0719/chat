@@ -15,9 +15,10 @@ services:
       # and message-worker). Defaults: 10000 entries, 5m TTL.
       - USER_CACHE_SIZE=10000
       - USER_CACHE_TTL=5m
-      # Valkey is used for room encryption keys only (when ENCRYPTION_ENABLED=true).
+      # Valkey is used for room encryption keys and room-meta L2 cache.
       - VALKEY_ADDRS=valkey:6379
       - VALKEY_KEY_GRACE_PERIOD=24h
+      - ROOM_META_L2_TTL=15m
       - BOOTSTRAP_STREAMS=true
       - ENCRYPTION_ENABLED=${ENCRYPTION_ENABLED:-false}
     volumes:
