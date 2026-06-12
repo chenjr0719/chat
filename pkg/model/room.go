@@ -42,6 +42,7 @@ type RoomInfo struct {
 	SiteID           string  `json:"siteId,omitempty"`
 	Name             string  `json:"name,omitempty"`
 	UserCount        int     `json:"userCount,omitempty"`
+	AppCount         int     `json:"appCount,omitempty"`
 	LastMsgAt        *int64  `json:"lastMsgAt,omitempty"`
 	LastMsgID        string  `json:"lastMsgId,omitempty"`
 	LastMentionAllAt *int64  `json:"lastMentionAllAt,omitempty"`

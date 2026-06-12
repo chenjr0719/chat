@@ -95,6 +95,119 @@ func TestMoveSelfDMFront_AlreadyFirst(t *testing.T) {
 	assert.Equal(t, "b", got[2].ID)
 }
 
+func TestApplyRoomInfo_NestedRoom(t *testing.T) {
+	seen := time.UnixMilli(100).UTC()
+	lastMsg := int64(200)
+	lastMention := int64(50)
+	pk := "a2V5LWJhc2U2NA=="
+	kv := 3
+	sub := model.Subscription{Name: "helper.bot", SiteID: "site-a", RoomID: "r1", LastSeenAt: &seen}
+	info := model.RoomInfo{
+		RoomID: "r1", Found: true, SiteID: "site-a", Name: "Canonical",
+		UserCount: 7, AppCount: 2, LastMsgAt: &lastMsg, LastMsgID: "m9",
+		LastMentionAllAt: &lastMention, PrivateKey: &pk, KeyVersion: &kv,
+	}
+	applyRoomInfo(&sub, &info)
+	assert.Equal(t, "helper.bot", sub.Name, "room canonical name must not overwrite the subscription name")
+	require.NotNil(t, sub.Room)
+	assert.Equal(t, "site-a", sub.Room.SiteID)
+	assert.Equal(t, "Canonical", sub.Room.Name)
+	assert.Equal(t, 7, sub.Room.UserCount)
+	assert.Equal(t, 2, sub.Room.AppCount)
+	assert.Equal(t, "m9", sub.Room.LastMsgID)
+	require.NotNil(t, sub.Room.LastMsgAt)
+	assert.Equal(t, time.UnixMilli(200).UTC(), *sub.Room.LastMsgAt)
+	require.NotNil(t, sub.Room.LastMentionAllAt)
+	assert.Equal(t, time.UnixMilli(50).UTC(), *sub.Room.LastMentionAllAt)
+	require.NotNil(t, sub.Room.PrivateKey, "private key must be forwarded, not dropped")
+	assert.Equal(t, pk, *sub.Room.PrivateKey)
+	require.NotNil(t, sub.Room.KeyVersion)
+	assert.Equal(t, 3, *sub.Room.KeyVersion)
+	assert.True(t, sub.Alert, "lastMsg newer than lastSeen")
+	assert.False(t, sub.HasMention, "mention older than lastSeen")
+}
+
+func TestApplyRoomInfo_NotFound_NoRoom(t *testing.T) {
+	sub := model.Subscription{Name: "general", SiteID: "site-a", RoomID: "r1"}
+	applyRoomInfo(&sub, &model.RoomInfo{RoomID: "r1", Found: false})
+	assert.Nil(t, sub.Room)
+	assert.Equal(t, "general", sub.Name)
+}
+
+func TestListSubscriptions_DegradedSite_BaselineRoom(t *testing.T) {
+	svc, subs, _, _, rooms, _ := newSvc(t)
+	lastMsg := time.UnixMilli(400).UTC()
+	storeSubs := []model.Subscription{{
+		ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "general",
+		RoomType: model.RoomTypeChannel, UserCount: 9, LastMsgAt: &lastMsg, LastMsgID: "m1",
+	}}
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).Return(nil, errors.New("down"))
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
+	require.NoError(t, err)
+	require.Len(t, resp.Subscriptions, 1)
+	room := resp.Subscriptions[0].Room
+	require.NotNil(t, room, "degraded site must still yield a baseline room object from the $lookup values")
+	assert.Equal(t, "site-a", room.SiteID)
+	assert.Equal(t, 9, room.UserCount)
+	assert.Equal(t, "m1", room.LastMsgID)
+	require.NotNil(t, room.LastMsgAt)
+	assert.Equal(t, lastMsg, *room.LastMsgAt)
+	assert.Nil(t, room.PrivateKey, "baseline has no key material")
+}
+
+func TestListSubscriptions_BotDM_AppDisplayName(t *testing.T) {
+	svc, subs, _, apps, rooms, _ := newSvc(t)
+	storeSubs := []model.Subscription{
+		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
+		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general"},
+	}
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
+	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"helper.bot"}).
+		Return(map[string]string{"helper.bot": "Helper App"}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", gomock.InAnyOrder([]string{"rb1", "rc1"})).
+		Return([]model.RoomInfo{
+			{RoomID: "rb1", Found: true, Name: "bot-room-canonical"},
+			{RoomID: "rc1", Found: true, Name: "general"},
+		}, nil)
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
+	require.NoError(t, err)
+	require.Len(t, resp.Subscriptions, 2)
+	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name, "botDM name must be replaced by the app display name")
+	require.NotNil(t, resp.Subscriptions[0].Room)
+	assert.Equal(t, "bot-room-canonical", resp.Subscriptions[0].Room.Name)
+	assert.Equal(t, "general", resp.Subscriptions[1].Name, "channel name must stay the subscription name")
+}
+
+func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
+	svc, subs, _, apps, rooms, _ := newSvc(t)
+	storeSubs := []model.Subscription{
+		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
+	}
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
+	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"helper.bot"}).
+		Return(nil, errors.New("db down"))
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"rb1"}).Return(nil, nil)
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
+	require.NoError(t, err, "app-name lookup failure must degrade, not fail the request")
+	require.Len(t, resp.Subscriptions, 1)
+	assert.Equal(t, "helper.bot", resp.Subscriptions[0].Name, "degraded lookup keeps the bot account name")
+}
+
+func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
+	svc, subs, _, apps, rooms, _ := newSvc(t)
+	storeSubs := []model.Subscription{
+		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "orphan.bot"},
+	}
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
+	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"orphan.bot"}).
+		Return(map[string]string{}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"rb1"}).Return(nil, nil)
+	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
+	require.NoError(t, err)
+	assert.Equal(t, "orphan.bot", resp.Subscriptions[0].Name, "unmatched bot keeps the account name")
+}
+
 func TestListSubscriptions_StoreError(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).
@@ -248,14 +361,16 @@ func TestGetDM_Enriched(t *testing.T) {
 	someMillis := int64(500)
 	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").
 		Return(&model.DMSubscription{
-			Subscription: &model.Subscription{ID: "d1", SiteID: "site-a", RoomID: "r1"},
+			Subscription: &model.Subscription{ID: "d1", SiteID: "site-a", RoomID: "r1", Name: "bob"},
 			HRInfo:       &model.SubscriptionHRInfo{Account: "bob", Name: "bob", EngName: "Bob"},
 		}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).
 		Return([]model.RoomInfo{{RoomID: "r1", Found: true, Name: "Renamed", LastMsgAt: &someMillis}}, nil)
 	resp, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: "bob"})
 	require.NoError(t, err)
-	assert.Equal(t, "Renamed", resp.Subscription.Name, "enriched name must propagate through GetDM write-back")
+	assert.Equal(t, "bob", resp.Subscription.Name, "subscription name must survive enrichment")
+	require.NotNil(t, resp.Subscription.Room, "enriched room must propagate through GetDM write-back")
+	assert.Equal(t, "Renamed", resp.Subscription.Room.Name)
 	require.NotNil(t, resp.Subscription.HRInfo, "HRInfo must survive the enrichment write-back")
 	assert.Equal(t, "Bob", resp.Subscription.HRInfo.EngName)
 }
@@ -295,7 +410,9 @@ func TestGetByRoomID_OK_Enriched(t *testing.T) {
 	assert.Equal(t, 1, resp.Total)
 	require.Len(t, resp.Subscriptions, 1)
 	assert.Equal(t, "s1", resp.Subscriptions[0].ID)
-	assert.Equal(t, "Renamed", resp.Subscriptions[0].Name, "enriched name must propagate through the 1-elem slice")
+	assert.Equal(t, "Stale", resp.Subscriptions[0].Name, "subscription name must survive enrichment")
+	require.NotNil(t, resp.Subscriptions[0].Room, "enriched room must propagate through the 1-elem slice")
+	assert.Equal(t, "Renamed", resp.Subscriptions[0].Room.Name)
 }
 
 func TestGetChannels_Empty(t *testing.T) {
@@ -312,6 +429,19 @@ func TestGetChannels_Empty(t *testing.T) {
 			assert.Equal(t, 0, resp.Total)
 		})
 	}
+}
+
+func TestGetByRoomID_BotDM_AppDisplayName(t *testing.T) {
+	svc, subs, _, apps, rooms, _ := newSvc(t)
+	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "rb1").
+		Return(&model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}, nil)
+	apps.EXPECT().GetAppNamesByAssistants(gomock.Any(), []string{"helper.bot"}).
+		Return(map[string]string{"helper.bot": "Helper App"}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"rb1"}).Return(nil, nil)
+	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "rb1"})
+	require.NoError(t, err)
+	require.Len(t, resp.Subscriptions, 1)
+	assert.Equal(t, "Helper App", resp.Subscriptions[0].Name, "botDM via getByRoomID must also carry the app display name")
 }
 
 func TestCount_Total(t *testing.T) {

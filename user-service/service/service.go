@@ -35,6 +35,7 @@ type UserRepository interface {
 type AppRepository interface {
 	GetApp(ctx context.Context, appID string) (*model.App, error)
 	ListApps(ctx context.Context, account string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[models.AppListItem], error)
+	GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error)
 }
 
 // RoomClient is the consumer-defined interface for room-service RPC calls.

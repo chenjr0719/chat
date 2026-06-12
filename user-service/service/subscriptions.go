@@ -51,8 +51,43 @@ func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.Subscr
 		subs = filterFavorites(subs)
 		subs = moveSelfDMFront(subs, account)
 	}
+	s.applyAppDisplayNames(c, subs)
 	s.enrichWithRoomInfo(c, subs)
 	return &models.SubscriptionListResponse{Subscriptions: subs, Total: len(subs)}, nil
+}
+
+// applyAppDisplayNames swaps each botDM subscription's name (the bot account) for the
+// app's display name — before enrichment, which never touches subscription names.
+// Lookup failure or a missing app degrades to the stored account name.
+func (s *UserService) applyAppDisplayNames(c *natsrouter.Context, subs []model.Subscription) {
+	var bots []string
+	seen := map[string]struct{}{}
+	for i := range subs {
+		if subs[i].RoomType != model.RoomTypeBotDM {
+			continue
+		}
+		if _, dup := seen[subs[i].Name]; dup {
+			continue
+		}
+		seen[subs[i].Name] = struct{}{}
+		bots = append(bots, subs[i].Name)
+	}
+	if len(bots) == 0 {
+		return
+	}
+	names, err := s.apps.GetAppNamesByAssistants(c, bots)
+	if err != nil {
+		slog.WarnContext(c, "app display-name lookup degraded", "account", c.Param("account"), "request_id", natsutil.RequestIDFromContext(c), "error", err)
+		return
+	}
+	for i := range subs {
+		if subs[i].RoomType != model.RoomTypeBotDM {
+			continue
+		}
+		if name, ok := names[subs[i].Name]; ok && name != "" {
+			subs[i].Name = name
+		}
+	}
 }
 
 // enrichWithRoomInfo overwrites room-derived fields per site in parallel; a failed
@@ -113,29 +148,46 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 			applyRoomInfo(&subs[j], &info)
 		}
 	}
+	// Degraded site or room not found ⇒ baseline room from the Mongo $lookup
+	// values, so the client always receives a room object.
+	for i := range subs {
+		if subs[i].Room == nil {
+			subs[i].Room = &model.SubscriptionRoom{
+				SiteID:    subs[i].SiteID,
+				UserCount: subs[i].UserCount,
+				LastMsgAt: subs[i].LastMsgAt,
+				LastMsgID: subs[i].LastMsgID,
+			}
+		}
+	}
 }
 
-// applyRoomInfo overwrites name/userCount/lastMsgId/lastMsgAt and computes alert/hasMention;
-// zero-value info (Found=false) is skipped. Pointer-passed to avoid a hugeParam copy; read-only.
+// applyRoomInfo nests all room-derived fields (including the E2E key for initial
+// key bootstrap) under sub.Room and computes alert/hasMention; zero-value info
+// (Found=false) is skipped. The subscription's own name is never overwritten —
+// room-service only supplies the room's canonical name.
 func applyRoomInfo(sub *model.Subscription, info *model.RoomInfo) {
 	if !info.Found {
 		return
 	}
-	if info.Name != "" {
-		sub.Name = info.Name
-	}
-	// Zero-value guards keep the Mongo $lookup baseline when an older room-service
-	// doesn't forward these yet or the room doc lacks them.
-	if info.UserCount > 0 {
-		sub.UserCount = info.UserCount
-	}
-	if info.LastMsgID != "" {
-		sub.LastMsgID = info.LastMsgID
+	room := &model.SubscriptionRoom{
+		SiteID:     info.SiteID,
+		Name:       info.Name,
+		UserCount:  info.UserCount,
+		AppCount:   info.AppCount,
+		LastMsgID:  info.LastMsgID,
+		PrivateKey: info.PrivateKey,
+		KeyVersion: info.KeyVersion,
 	}
 	if info.LastMsgAt != nil {
 		t := time.UnixMilli(*info.LastMsgAt).UTC()
-		sub.LastMsgAt = &t
+		room.LastMsgAt = &t
 	}
+	if info.LastMentionAllAt != nil {
+		t := time.UnixMilli(*info.LastMentionAllAt).UTC()
+		room.LastMentionAllAt = &t
+	}
+	sub.Room = room
 	// alert = hasUnread, hasMention = hasGroupMention (legacy wire-name mapping).
 	sub.Alert = unread(sub.LastSeenAt, info.LastMsgAt)
 	sub.HasMention = unread(sub.LastSeenAt, info.LastMentionAllAt)
@@ -240,6 +292,7 @@ func (s *UserService) GetByRoomID(c *natsrouter.Context, req models.GetByRoomIDR
 		return &models.SubscriptionListResponse{Subscriptions: []model.Subscription{}, Total: 0}, nil
 	}
 	one := []model.Subscription{*sub}
+	s.applyAppDisplayNames(c, one)
 	s.enrichWithRoomInfo(c, one)
 	return &models.SubscriptionListResponse{Subscriptions: one, Total: 1}, nil
 }

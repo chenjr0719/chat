@@ -45,11 +45,32 @@ type Subscription struct {
 	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
 	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
 
-	// Room-level enrichment from the rooms $lookup/$addFields at read time; bson tags are decode-only —
-	// writers persisting a full Subscription doc MUST strip these three fields to avoid staling storage.
-	UserCount int        `json:"userCount,omitempty" bson:"userCount,omitempty"`
-	LastMsgAt *time.Time `json:"lastMsgAt,omitempty" bson:"lastMsgAt,omitempty"`
-	LastMsgID string     `json:"lastMsgId,omitempty" bson:"lastMsgId,omitempty"`
+	// Read-time baseline from the rooms $lookup/$addFields — internal only (json:"-"), surfaced to
+	// clients via Room. Writers persisting a full Subscription doc MUST strip these three fields.
+	UserCount int        `json:"-" bson:"userCount,omitempty"`
+	LastMsgAt *time.Time `json:"-" bson:"lastMsgAt,omitempty"`
+	LastMsgID string     `json:"-" bson:"lastMsgId,omitempty"`
+
+	// Room carries all room-derived fields, populated at read time from room-service's
+	// RoomsInfoBatch RPC (baseline $lookup values when the RPC degrades). Never persisted.
+	Room *SubscriptionRoom `json:"room,omitempty" bson:"-"`
+}
+
+// SubscriptionRoom is the room-derived view nested on an enriched subscription.
+// Name is the room's canonical name — the subscription's own Name (counterpart
+// account for DMs, app display name for botDMs) is never overwritten by it.
+type SubscriptionRoom struct {
+	SiteID           string     `json:"siteId,omitempty" bson:"-"`
+	Name             string     `json:"name,omitempty" bson:"-"`
+	UserCount        int        `json:"userCount,omitempty" bson:"-"`
+	AppCount         int        `json:"appCount,omitempty" bson:"-"`
+	LastMsgAt        *time.Time `json:"lastMsgAt,omitempty" bson:"-"`
+	LastMsgID        string     `json:"lastMsgId,omitempty" bson:"-"`
+	LastMentionAllAt *time.Time `json:"lastMentionAllAt,omitempty" bson:"-"`
+	// Room E2E key delivered to authorized members for initial key bootstrap
+	// on subscription.list (same payload as the room.key.get RPC).
+	PrivateKey *string `json:"privateKey,omitempty" bson:"-"`
+	KeyVersion *int    `json:"keyVersion,omitempty" bson:"-"`
 }
 
 // SubscriptionHRInfo carries the counterpart's HR-directory record on a DM subscription for sidebar/header rendering.

@@ -2135,6 +2135,25 @@ func TestHandler_handleRoomsInfoBatch(t *testing.T) {
 	}
 }
 
+func TestHandler_handleRoomsInfoBatch_ForwardsCounts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockRoomStore(ctrl)
+	keyStore := NewMockRoomKeyStore(ctrl)
+
+	store.EXPECT().ListRoomsByIDs(gomock.Any(), []string{"r1"}).Return([]model.Room{
+		{ID: "r1", Name: "general", SiteID: "site-a", UserCount: 5, AppCount: 2},
+	}, nil)
+	keyStore.EXPECT().GetMany(gomock.Any(), []string{"r1"}).Return(map[string]*roomkeystore.VersionedKeyPair{}, nil)
+
+	h := &Handler{store: store, keyStore: keyStore, siteID: "site-a", maxBatchSize: 100}
+
+	resp, err := h.roomsInfoBatch(ctxParams(map[string]string{}), model.RoomsInfoBatchRequest{RoomIDs: []string{"r1"}})
+	require.NoError(t, err)
+	require.Len(t, resp.Rooms, 1)
+	assert.Equal(t, 5, resp.Rooms[0].UserCount)
+	assert.Equal(t, 2, resp.Rooms[0].AppCount)
+}
+
 func TestHandler_handleRoomsInfoBatch_chunking(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)

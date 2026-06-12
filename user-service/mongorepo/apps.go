@@ -60,3 +60,21 @@ func (r *AppRepo) ListApps(ctx context.Context, account string, page mongoutil.O
 	}
 	return out, nil
 }
+
+// GetAppNamesByAssistants maps bot account (assistant.name) → app display name for the given accounts.
+func (r *AppRepo) GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error) {
+	apps, err := r.apps.FindMany(ctx,
+		bson.M{"assistant.name": bson.M{"$in": botAccounts}},
+		mongoutil.WithProjection(bson.M{"name": 1, "assistant.name": 1}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find apps by assistant names: %w", err)
+	}
+	out := make(map[string]string, len(apps))
+	for i := range apps {
+		if apps[i].Assistant != nil {
+			out[apps[i].Assistant.Name] = apps[i].Name
+		}
+	}
+	return out, nil
+}

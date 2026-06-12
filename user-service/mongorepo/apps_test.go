@@ -54,6 +54,30 @@ func TestGetApp_Integration(t *testing.T) {
 	})
 }
 
+func TestGetAppNamesByAssistants_Integration(t *testing.T) {
+	r, db := newTestAppRepo(t)
+	ctx := context.Background()
+	seedApps(t, db)
+
+	t.Run("maps bot accounts to display names", func(t *testing.T) {
+		names, err := r.GetAppNamesByAssistants(ctx, []string{"helper.bot", "other.bot"})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"helper.bot": "Helper", "other.bot": "Other"}, names)
+	})
+
+	t.Run("unknown bot omitted", func(t *testing.T) {
+		names, err := r.GetAppNamesByAssistants(ctx, []string{"helper.bot", "ghost.bot"})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"helper.bot": "Helper"}, names)
+	})
+
+	t.Run("empty input yields empty map", func(t *testing.T) {
+		names, err := r.GetAppNamesByAssistants(ctx, []string{})
+		require.NoError(t, err)
+		assert.Empty(t, names)
+	})
+}
+
 func TestListApps_Integration(t *testing.T) {
 	r, db := newTestAppRepo(t)
 	ctx := context.Background()

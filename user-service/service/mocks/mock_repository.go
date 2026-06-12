@@ -255,6 +255,21 @@ func (mr *MockAppRepositoryMockRecorder) GetApp(ctx, appID any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApp", reflect.TypeOf((*MockAppRepository)(nil).GetApp), ctx, appID)
 }
 
+// GetAppNamesByAssistants mocks base method.
+func (m *MockAppRepository) GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAppNamesByAssistants", ctx, botAccounts)
+	ret0, _ := ret[0].(map[string]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetAppNamesByAssistants indicates an expected call of GetAppNamesByAssistants.
+func (mr *MockAppRepositoryMockRecorder) GetAppNamesByAssistants(ctx, botAccounts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAppNamesByAssistants", reflect.TypeOf((*MockAppRepository)(nil).GetAppNamesByAssistants), ctx, botAccounts)
+}
+
 // ListApps mocks base method.
 func (m *MockAppRepository) ListApps(ctx context.Context, account string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[models.AppListItem], error) {
 	m.ctrl.T.Helper()

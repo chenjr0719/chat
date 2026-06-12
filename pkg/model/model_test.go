@@ -1658,6 +1658,71 @@ func TestListOrgMembersResponseJSON(t *testing.T) {
 	assert.Equal(t, resp, dst)
 }
 
+func TestSubscriptionRoomJSON(t *testing.T) {
+	t.Run("round trip with all fields", func(t *testing.T) {
+		pk := "dGVzdC1wcml2YXRlLWtleS1iYXNlNjQ="
+		kv := 7
+		lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+		lastMention := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+		r := model.SubscriptionRoom{
+			SiteID:           "site-a",
+			Name:             "general",
+			UserCount:        42,
+			AppCount:         3,
+			LastMsgAt:        &lastMsg,
+			LastMsgID:        "m-100",
+			LastMentionAllAt: &lastMention,
+			PrivateKey:       &pk,
+			KeyVersion:       &kv,
+		}
+		roundTrip(t, &r, &model.SubscriptionRoom{})
+	})
+
+	t.Run("zero value omits all fields", func(t *testing.T) {
+		data, err := json.Marshal(&model.SubscriptionRoom{})
+		require.NoError(t, err)
+		assert.JSONEq(t, `{}`, string(data))
+	})
+}
+
+func TestSubscriptionJSON_NestedRoom(t *testing.T) {
+	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	s := model.Subscription{
+		ID:        "s1",
+		User:      model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:    "r1",
+		SiteID:    "site-a",
+		RoomType:  model.RoomTypeChannel,
+		Name:      "general",
+		JoinedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UserCount: 42,
+		LastMsgAt: &lastMsg,
+		LastMsgID: "m-100",
+		Room: &model.SubscriptionRoom{
+			SiteID:    "site-a",
+			Name:      "general-canonical",
+			UserCount: 42,
+			LastMsgID: "m-100",
+		},
+	}
+	data, err := json.Marshal(&s)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	// Room-derived fields are nested under "room" — never flattened on the wire.
+	for _, key := range []string{"userCount", "lastMsgAt", "lastMsgId"} {
+		_, present := raw[key]
+		assert.False(t, present, "flattened %q must not serialize at the top level", key)
+	}
+	room, ok := raw["room"].(map[string]any)
+	require.True(t, ok, "room object must be present")
+	assert.Equal(t, "general-canonical", room["name"])
+	assert.Equal(t, float64(42), room["userCount"])
+	assert.Equal(t, "m-100", room["lastMsgId"])
+}
+
 func TestRoomsInfoBatchRequestJSON(t *testing.T) {
 	src := model.RoomsInfoBatchRequest{
 		RoomIDs: []string{"r1", "r2", "r3"},
@@ -1683,6 +1748,7 @@ func TestRoomInfoJSON(t *testing.T) {
 			SiteID:           "site-a",
 			Name:             "general",
 			UserCount:        42,
+			AppCount:         3,
 			LastMsgAt:        &lastMsg,
 			LastMsgID:        "m-100",
 			LastMentionAllAt: &lastMention,
@@ -1716,7 +1782,7 @@ func TestRoomInfoJSON(t *testing.T) {
 		assert.True(t, foundPresent, "found must be present")
 		assert.Equal(t, false, foundVal)
 
-		for _, key := range []string{"siteId", "name", "userCount", "lastMsgAt", "lastMsgId", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
+		for _, key := range []string{"siteId", "name", "userCount", "appCount", "lastMsgAt", "lastMsgId", "lastMentionAllAt", "privateKey", "keyVersion", "error"} {
 			_, present := raw[key]
 			assert.False(t, present, "%q should be omitted", key)
 		}
@@ -3400,17 +3466,22 @@ func TestUserStatusUpdated_StatusIsShowOmittedWhenNil(t *testing.T) {
 }
 
 func TestSubscriptionEnrichmentFields_RoundTrip(t *testing.T) {
+	// The flattened $lookup baseline fields are internal (json:"-"); the wire
+	// carries room-derived data only via the nested Room object.
 	lastMsg := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
 	src := model.Subscription{
-		ID:        "s1",
-		User:      model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID:    "r1",
-		SiteID:    "site-a",
-		Roles:     []model.Role{model.RoleMember},
-		JoinedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UserCount: 42,
-		LastMsgAt: &lastMsg,
-		LastMsgID: "msg-abc",
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Room: &model.SubscriptionRoom{
+			SiteID:    "site-a",
+			UserCount: 42,
+			LastMsgAt: &lastMsg,
+			LastMsgID: "msg-abc",
+		},
 	}
 	dst := model.Subscription{}
 	roundTrip(t, &src, &dst)
