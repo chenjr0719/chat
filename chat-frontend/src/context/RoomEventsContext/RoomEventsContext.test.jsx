@@ -25,9 +25,8 @@ vi.mock('@/context/RoomKeysContext', () => ({
 
 /** Turn an inline "room-shaped" fixture into a subscription record that
  *  the new bootstrap (3 subscription RPCs) returns. The real user-service
- *  embeds room metadata (userCount, lastMsgAt) inline on each subscription
- *  reply — this helper mirrors that shape so tests can keep declaring
- *  rooms in the old `{id, name, type, siteId, …}` form. */
+ *  now embeds room metadata under `room` (not top-level), so this helper
+ *  nests userCount / lastMsgAt / lastMsgId there to mirror the wire shape. */
 function roomToSub(room) {
   return {
     id: `sub-${room.id}`,
@@ -40,9 +39,11 @@ function roomToSub(room) {
     joinedAt: '2026-01-01T00:00:00Z',
     hasMention: false,
     alert: false,
-    userCount: room.userCount,
-    lastMsgAt: room.lastMsgAt ?? null,
-    lastMsgId: room.lastMsgId,
+    room: {
+      userCount: room.userCount,
+      lastMsgAt: room.lastMsgAt ?? null,
+      lastMsgId: room.lastMsgId,
+    },
   }
 }
 
@@ -1343,9 +1344,11 @@ describe('RoomEventsProvider missing-key path', () => {
               joinedAt: '2026-01-01T00:00:00Z',
               hasMention: false,
               alert: false,
-              userCount: 2,
-              lastMsgAt: null,
-              lastMsgId: null,
+              room: {
+                userCount: 2,
+                lastMsgAt: null,
+                lastMsgId: null,
+              },
             },
           ],
         })

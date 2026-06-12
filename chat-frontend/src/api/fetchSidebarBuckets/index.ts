@@ -10,8 +10,8 @@ import type { Nats, DMSubscription, Room } from '../types'
  *  ship plain Subscription (hrInfo absent ⇒ typed `undefined`), DM rooms
  *  ship DMSubscription (hrInfo present). One type covers both since
  *  DMSubscription extends Subscription. user-service embeds room-level
- *  metadata (userCount, lastMsgAt, lastMsgId) inline so the frontend
- *  doesn't need a separate `rooms.list` call. */
+ *  metadata under `sub.room` so the frontend doesn't need a separate
+ *  `rooms.list` call. */
 interface SidebarBucketReply {
   subscriptions: DMSubscription[]
   total: number
@@ -106,19 +106,20 @@ export async function fetchSidebarBuckets({ user, request }: Nats): Promise<Side
 }
 
 /** Derive a `Room` from a subscription record. The real user-service
- *  embeds the fields we actually need (userCount, lastMsgAt, lastMsgId);
- *  fields the reducer's `toSummary` doesn't read default to neutral
- *  zero/empty values so the type contract is satisfied. */
+ *  embeds the fields we actually need under `sub.room` (userCount,
+ *  lastMsgAt, lastMsgId, appCount); fields the reducer's `toSummary`
+ *  doesn't read default to neutral zero/empty values so the type
+ *  contract is satisfied. */
 function subToRoom(sub: DMSubscription, fallbackSiteId: string): Room {
   return {
     id: sub.roomId,
     name: sub.name ?? '',
     type: sub.roomType,
     siteId: sub.siteId ?? fallbackSiteId,
-    userCount: sub.userCount ?? 0,
-    appCount: 0,
-    lastMsgId: sub.lastMsgId ?? '',
-    lastMsgAt: sub.lastMsgAt ?? undefined,
+    userCount: sub.room?.userCount ?? 0,
+    appCount: sub.room?.appCount ?? 0,
+    lastMsgId: sub.room?.lastMsgId ?? '',
+    lastMsgAt: sub.room?.lastMsgAt ?? undefined,
     createdAt: '',
     updatedAt: '',
   }
