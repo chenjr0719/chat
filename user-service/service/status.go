@@ -34,13 +34,29 @@ func (s *UserService) GetStatusByName(c *natsrouter.Context, req models.StatusGe
 	}, nil
 }
 
-// GetProfileByName is an intentional twin of GetStatusByName — same request,
-// same response fields, same users-collection query; clients use it as the
-// profile lookup. This endpoint should fetch data from the HR collection
-// before querying the Mongo users collection for statusIsShow and statusText;
-// not implemented here as it needs to be done in the internal repo.
+// GetProfileByName is the profile lookup. It behaves identically to
+// GetStatusByName today, but is kept as its own handler with its own body
+// (not a delegate) because the internal repo overrides it: this endpoint
+// should fetch data from the HR collection before querying the Mongo users
+// collection for statusIsShow and statusText. That HR step is not implemented
+// here — it needs to be done in the internal repo — so the two handlers must
+// be free to diverge.
 func (s *UserService) GetProfileByName(c *natsrouter.Context, req models.StatusGetByNameRequest) (*models.StatusView, error) {
-	return s.GetStatusByName(c, req)
+	c.WithLogValues("account", c.Param("account"), "target", req.Name)
+	u, err := s.users.GetUserStatus(c, req.Name)
+	if err != nil {
+		return nil, fmt.Errorf("get profile: %w", err)
+	}
+	if u == nil {
+		return nil, errcode.NotFound("user not found")
+	}
+	return &models.StatusView{
+		Account:      u.Account,
+		StatusText:   u.StatusText,
+		StatusIsShow: u.StatusIsShow,
+		ChineseName:  u.ChineseName,
+		EngName:      u.EngName,
+	}, nil
 }
 
 func (s *UserService) SetStatus(c *natsrouter.Context, req models.StatusSetRequest) (*models.StatusView, error) {
