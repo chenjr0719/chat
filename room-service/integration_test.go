@@ -2300,7 +2300,8 @@ func TestMongoStore_ToggleSubscriptionFavorite(t *testing.T) {
 	_, err := db.Collection("subscriptions").InsertOne(ctx, rawSub)
 	require.NoError(t, err)
 
-	got, err := store.ToggleSubscriptionFavorite(ctx, "r1", "alice")
+	ts1 := time.Now().UTC()
+	got, err := store.ToggleSubscriptionFavorite(ctx, "r1", "alice", ts1)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.True(t, got.Favorite, "first toggle on legacy doc must flip missing→true")
@@ -2310,15 +2311,47 @@ func TestMongoStore_ToggleSubscriptionFavorite(t *testing.T) {
 	persisted, err := store.GetSubscription(ctx, "alice", "r1")
 	require.NoError(t, err)
 	assert.True(t, persisted.Favorite)
+	// favoriteUpdatedAt is stamped at the supplied instant so the origin doc
+	// shares the federated event's high-water mark.
+	assert.Equal(t, ts1.UnixMilli(), subTimeField(t, db, "r1", "alice", "favoriteUpdatedAt").UnixMilli())
 
-	got, err = store.ToggleSubscriptionFavorite(ctx, "r1", "alice")
+	got, err = store.ToggleSubscriptionFavorite(ctx, "r1", "alice", time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.False(t, got.Favorite, "second toggle must flip true→false")
 
-	gotNil, err := store.ToggleSubscriptionFavorite(ctx, "missing", "alice")
+	gotNil, err := store.ToggleSubscriptionFavorite(ctx, "missing", "alice", time.Now().UTC())
 	assert.Nil(t, gotNil)
 	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+}
+
+// TestMongoStore_ApplySubscriptionVisibility_StampsTimestamp asserts the origin
+// write stamps visibilityUpdatedAt so the doc shares the federated event's
+// high-water mark (inbox-worker guards remote applies against it).
+func TestMongoStore_ApplySubscriptionVisibility_StampsTimestamp(t *testing.T) {
+	db := testutil.MongoDB(t, "room-svc-visibility-stamp")
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	mustInsertSub(t, db, &model.Subscription{
+		ID:       idgen.GenerateUUIDv7(),
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		RoomType: model.RoomTypeChannel,
+		SiteID:   "site-a",
+		Roles:    []model.Role{model.RoleOwner},
+		JoinedAt: time.Now().UTC(),
+	})
+
+	// restrict+owner branch.
+	ts1 := time.Now().UTC()
+	require.NoError(t, store.ApplySubscriptionVisibility(ctx, "r1", true, false, "alice", ts1))
+	assert.Equal(t, ts1.UnixMilli(), subTimeField(t, db, "r1", "alice", "visibilityUpdatedAt").UnixMilli())
+
+	// flags-only branch (ownerAccount empty).
+	ts2 := ts1.Add(time.Second)
+	require.NoError(t, store.ApplySubscriptionVisibility(ctx, "r1", false, false, "", ts2))
+	assert.Equal(t, ts2.UnixMilli(), subTimeField(t, db, "r1", "alice", "visibilityUpdatedAt").UnixMilli())
 }
 
 func TestMongoStore_SetOwnerRole_Integration(t *testing.T) {

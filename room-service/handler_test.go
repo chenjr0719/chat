@@ -4138,7 +4138,7 @@ func TestHandleRoomRename_Validation(t *testing.T) {
 // lookup. Used by the success-path table rows.
 func happyPathRestrictedSuccessSetup(s *MockRoomStore) {
 	s.EXPECT().UpdateRoomVisibility(gomock.Any(), "r1", gomock.Any(), gomock.Any()).Return(nil)
-	s.EXPECT().ApplySubscriptionVisibility(gomock.Any(), "r1", gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+	s.EXPECT().ApplySubscriptionVisibility(gomock.Any(), "r1", gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 	s.EXPECT().ListSubscriptionsByRoom(gomock.Any(), "r1").Return(nil, nil)
 	s.EXPECT().FindUsersByAccounts(gomock.Any(), gomock.Any()).Return(nil, nil)
 }
@@ -4602,7 +4602,7 @@ func TestHandler_FavoriteToggle_Success(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(&model.Subscription{
 			ID:       "s1",
 			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
@@ -4650,14 +4650,18 @@ func TestHandler_FavoriteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
+	var favoriteTs time.Time
 	store.EXPECT().
-		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
-		Return(&model.Subscription{
-			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID:   "r1",
-			SiteID:   "site-a",
-			Favorite: true,
-		}, nil)
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _, _ string, ts time.Time) (*model.Subscription, error) {
+			favoriteTs = ts
+			return &model.Subscription{
+				User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+				RoomID:   "r1",
+				SiteID:   "site-a",
+				Favorite: true,
+			}, nil
+		})
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
 		Return("site-b", nil)
@@ -4691,6 +4695,10 @@ func TestHandler_FavoriteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	assert.Equal(t, "r1", payload.RoomID)
 	assert.True(t, payload.Favorite)
 	assert.NotZero(t, payload.Timestamp)
+	// The origin doc's favoriteUpdatedAt and the published event timestamp must
+	// be the same instant so remote replicas guard against one high-water mark.
+	assert.False(t, favoriteTs.IsZero())
+	assert.Equal(t, favoriteTs.UnixMilli(), payload.Timestamp)
 }
 
 func TestHandler_FavoriteToggle_NotRoomMember(t *testing.T) {
@@ -4698,7 +4706,7 @@ func TestHandler_FavoriteToggle_NotRoomMember(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(nil, model.ErrSubscriptionNotFound)
 
 	h := &Handler{
@@ -4716,7 +4724,7 @@ func TestHandler_FavoriteToggle_StoreError(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(nil, fmt.Errorf("db down"))
 
 	h := &Handler{
@@ -4734,7 +4742,7 @@ func TestHandler_FavoriteToggle_GetUserSiteIDError(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(&model.Subscription{
 			User: model.SubscriptionUser{ID: "u1", Account: "alice"}, RoomID: "r1",
 		}, nil)
@@ -4761,7 +4769,7 @@ func TestHandler_FavoriteToggle_CrossSiteOutboxPublishFailure(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(&model.Subscription{
 			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
 			RoomID:   "r1",
@@ -4790,7 +4798,7 @@ func TestHandler_FavoriteToggle_CorePublishFailureIsNonFatal(t *testing.T) {
 	store := NewMockRoomStore(ctrl)
 
 	store.EXPECT().
-		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice").
+		ToggleSubscriptionFavorite(gomock.Any(), "r1", "alice", gomock.Any()).
 		Return(&model.Subscription{
 			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
 			RoomID:   "r1",

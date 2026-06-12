@@ -116,34 +116,41 @@ of publish order. The read-receipt handler already used a `$lt`
 last-seen guard; this extends the same idiom to the remaining mutable
 `$set` writes so they are order-independent.
 
-| Handler                        | Write                                  | Guard field    | Rule                                              |
-|--------------------------------|----------------------------------------|----------------|---------------------------------------------------|
-| `room_sync`                    | room metadata `$set`                   | `updatedAt`    | apply only if event `UpdatedAt` > stored          |
-| `role_updated`                 | subscription roles `$set`              | `rolesUpdatedAt` | apply only if event timestamp > stored          |
-| `subscription_mute_toggled`    | subscription `muted` `$set`            | `muteUpdatedAt`  | apply only if event timestamp > stored          |
+| Handler                          | Write                                                | Guard field           | Origin stamp |
+|----------------------------------|------------------------------------------------------|-----------------------|--------------|
+| `room_sync`                      | room metadata `$set`                                 | `updatedAt`           | n/a (room)   |
+| `role_updated`                   | subscription roles `$set`                            | `rolesUpdatedAt`      | room-service `SetOwnerRole` |
+| `subscription_mute_toggled`      | subscription `muted` `$set`                          | `muteUpdatedAt`       | room-service `ToggleSubscriptionMute` |
+| `subscription_favorite_toggled`  | subscription `favorite` `$set`                       | `favoriteUpdatedAt`   | room-service `ToggleSubscriptionFavorite` |
+| `room_renamed`                   | per-sub `name` `$set` (UpdateMany)                   | `nameUpdatedAt`       | room-worker `UpdateSubscriptionNamesForRoom` |
+| `room_restricted` (visibility)   | per-sub `{restricted, externalAccess, roles}` (UpdateMany) | `visibilityUpdatedAt` | room-service `ApplySubscriptionVisibility` |
 
-The guard timestamp is the source event's publish time — the event's
-`Timestamp` (epoch millis) converted to a `time.Time` via `time.UnixMilli`
-so it matches the codebase's other Mongo time fields (`lastSeenAt`, room
-`updatedAt`) — threaded from the event into the store method (e.g.
-`UpdateSubscriptionMute(..., muteUpdatedAt)`).
+The guard applies the write only when the event's timestamp is strictly
+newer than the stored guard field (`$exists:false` or `$lt`). The timestamp
+is the source event's publish time — the event's `Timestamp` (epoch millis)
+converted to a `time.Time` via `time.UnixMilli` so it matches the codebase's
+other Mongo time fields (`lastSeenAt`, room `updatedAt`) — threaded from the
+event into the store method (e.g. `UpdateSubscriptionMute(..., muteUpdatedAt)`).
 Older or duplicate events are silent no-ops; a genuinely missing
 subscription is also a silent no-op (federation race — the user may have
 left mid-flight), except `role_updated`, which returns an error so the
-event is redelivered until `member_added` lands.
+event is redelivered until `member_added` lands. The two room-wide writes
+(`room_renamed`, `room_restricted`) are `UpdateMany`s whose `$lt` guard is
+evaluated **per document**, so a sub already at a newer event is skipped
+while its siblings advance.
 
 For the guard to be consistent across sites, the **origin** site stamps the
-same value. `room-service` computes one `now := time.Now().UTC()` per RPC,
-writes it to the local subscription's `rolesUpdatedAt`/`muteUpdatedAt` (via
-`SetOwnerRole(..., now)` / `ToggleSubscriptionMute(..., now)`), and publishes
-that same instant as the event `Timestamp`. The origin doc and every remote
-replica therefore converge on one high-water mark — without this, the origin
-write would carry no guard field and a later federated event from another
-site could regress it.
+same value: it computes one `now := time.Now().UTC()` per RPC, writes it to
+the local subscription's guard field (via the store method named in the
+table), and publishes that same instant as the event `Timestamp`. The origin
+doc and every remote replica therefore converge on one high-water mark —
+without this, the origin write would carry no guard field and a later
+federated event from another site could regress it.
 
 ### No schema migration
 
-The guard fields (`updatedAt`/`rolesUpdatedAt`/`muteUpdatedAt`) are seeded
+The guard fields (`updatedAt`/`rolesUpdatedAt`/`muteUpdatedAt`/
+`favoriteUpdatedAt`/`nameUpdatedAt`/`visibilityUpdatedAt`) are seeded
 lazily: the guard treats a missing field (`$exists: false`) as "older than
 any event," so existing documents accept the first write and adopt the
 field. No backfill is required.

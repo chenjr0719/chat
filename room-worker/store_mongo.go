@@ -478,10 +478,10 @@ func (s *MongoStore) updateChannelRoom(ctx context.Context, roomID string, updat
 	return nil
 }
 
-func (s *MongoStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string) error {
+func (s *MongoStore) UpdateSubscriptionNamesForRoom(ctx context.Context, roomID, newName string, nameUpdatedAt time.Time) error {
 	if _, err := s.subscriptions.UpdateMany(ctx,
 		bson.M{"roomId": roomID},
-		bson.M{"$set": bson.M{"name": newName}}); err != nil {
+		bson.M{"$set": bson.M{"name": newName, "nameUpdatedAt": nameUpdatedAt}}); err != nil {
 		return fmt.Errorf("update subscription names for room %s: %w", roomID, err)
 	}
 	return nil

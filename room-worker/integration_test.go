@@ -1911,3 +1911,31 @@ func TestIntegration_ProcessRoomRename(t *testing.T) {
 	assert.Equal(t, roomID, outboxPayload.RoomID)
 	assert.Equal(t, newName, outboxPayload.NewName)
 }
+
+// TestMongoStore_UpdateSubscriptionNamesForRoom_StampsTimestamp asserts the
+// origin rename write stamps nameUpdatedAt so the doc shares the federated
+// event's high-water mark (inbox-worker guards remote applies against it).
+func TestMongoStore_UpdateSubscriptionNamesForRoom_StampsTimestamp(t *testing.T) {
+	db := testutil.MongoDB(t, "room-worker-rename-stamp")
+	store := NewMongoStore(db)
+	ctx := context.Background()
+
+	mustInsertSub(t, db, &model.Subscription{
+		ID:     "s1",
+		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1",
+		SiteID: "site-a",
+		Name:   "old",
+	})
+
+	ts := time.Now().UTC()
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "new", ts))
+
+	var doc bson.M
+	require.NoError(t, db.Collection("subscriptions").
+		FindOne(ctx, bson.M{"roomId": "r1", "u.account": "alice"}).Decode(&doc))
+	assert.Equal(t, "new", doc["name"])
+	dt, ok := doc["nameUpdatedAt"].(bson.DateTime)
+	require.True(t, ok, "nameUpdatedAt is %T, want bson.DateTime", doc["nameUpdatedAt"])
+	assert.Equal(t, ts.UnixMilli(), dt.Time().UTC().UnixMilli())
+}

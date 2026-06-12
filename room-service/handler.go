@@ -1595,7 +1595,7 @@ func (h *Handler) roomRestricted(c *natsrouter.Context, req model.RoomRestricted
 		}
 		return nil, fmt.Errorf("update room restricted: %w", err)
 	}
-	if err := h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount); err != nil {
+	if err := h.store.ApplySubscriptionVisibility(ctx, req.RoomID, req.Restricted, req.ExternalAccess, req.OwnerAccount, time.UnixMilli(req.Timestamp).UTC()); err != nil {
 		if errors.Is(err, ErrOwnerNotSubscribed) {
 			return nil, errOwnerNotMember
 		}
@@ -1777,15 +1777,17 @@ func (h *Handler) favoriteToggle(c *natsrouter.Context) (*model.FavoriteToggleRe
 		)
 	}
 
-	sub, err := h.store.ToggleSubscriptionFavorite(ctx, roomID, account)
+	// One instant shared by the origin write and the published event: the doc's
+	// favoriteUpdatedAt must equal the event timestamp so remote replicas guard
+	// against the same high-water mark.
+	now := time.Now().UTC()
+	sub, err := h.store.ToggleSubscriptionFavorite(ctx, roomID, account, now)
 	if err != nil {
 		if errors.Is(err, model.ErrSubscriptionNotFound) {
 			return nil, errNotRoomMember
 		}
 		return nil, fmt.Errorf("toggle subscription favorite: %w", err)
 	}
-
-	now := time.Now().UTC()
 
 	if _, err := h.publishSubscriptionUpdate(ctx, account, "favorite_toggled", sub, now); err != nil {
 		return nil, err
