@@ -18,6 +18,11 @@ services:
       - OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
       - OIDC_AUDIENCES=nats-chat
       - TLS_SKIP_VERIFY=false
+      # Provisioning gate (active only when DEV_MODE=false).
+      - SITE_ID=site-local
+      - REQUIRE_PROVISIONED=${REQUIRE_PROVISIONED:-true}
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=chat
     networks:
       - chat-local
 

@@ -15,6 +15,7 @@ var allReasons = []Reason{
 	MessageLargeRoomPostRestricted, MessageNotSubscribed, MessageOutsideAccessWindow,
 	PinDisabled, PinLimitReached, PinRoomTooLarge,
 	AuthTokenExpired, AuthInvalidToken, AuthInvalidRequest, AuthInvalidNKey, AuthMissingFields,
+	PortalAccountNotProvisioned,
 	RequestIDRequired,
 }
 

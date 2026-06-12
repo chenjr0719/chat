@@ -1,4 +1,4 @@
-package main
+package ginutil
 
 import (
 	"net/http"
@@ -12,10 +12,10 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-func TestRequestIDMiddleware_AttachesIDToRequestContext(t *testing.T) {
+func TestRequestID_AttachesIDToRequestContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(requestIDMiddleware())
+	r.Use(RequestID())
 
 	var fromCtx string
 	var fromGin string
@@ -36,10 +36,10 @@ func TestRequestIDMiddleware_AttachesIDToRequestContext(t *testing.T) {
 	assert.Equal(t, testID, w.Header().Get(natsutil.RequestIDHeader), "echoed in response header")
 }
 
-func TestRequestIDMiddleware_GeneratesAndAttachesWhenHeaderAbsent(t *testing.T) {
+func TestRequestID_GeneratesAndAttachesWhenHeaderAbsent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(requestIDMiddleware())
+	r.Use(RequestID())
 
 	var fromCtx string
 	var fromGin string
@@ -59,10 +59,10 @@ func TestRequestIDMiddleware_GeneratesAndAttachesWhenHeaderAbsent(t *testing.T) 
 		"the same minted ID must be echoed in the response header")
 }
 
-func TestRequestIDMiddleware_RegeneratesOnMalformedHeader(t *testing.T) {
+func TestRequestID_RegeneratesOnMalformedHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(requestIDMiddleware())
+	r.Use(RequestID())
 
 	var fromCtx string
 	r.GET("/test", func(c *gin.Context) {
@@ -81,12 +81,12 @@ func TestRequestIDMiddleware_RegeneratesOnMalformedHeader(t *testing.T) {
 		"echoed response header must match the regenerated ID, not the malformed input")
 }
 
-func TestAccessLogMiddleware_LogsAndPassesThrough(t *testing.T) {
+func TestAccessLog_LogsAndPassesThrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	// requestIDMiddleware first, so the access log gets a non-empty request_id field.
-	r.Use(requestIDMiddleware())
-	r.Use(accessLogMiddleware())
+	// RequestID first, so the access log gets a non-empty request_id field.
+	r.Use(RequestID())
+	r.Use(AccessLog())
 
 	handlerCalled := false
 	r.GET("/test", func(c *gin.Context) {
@@ -98,14 +98,14 @@ func TestAccessLogMiddleware_LogsAndPassesThrough(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	assert.True(t, handlerCalled, "downstream handler must run after accessLogMiddleware")
+	assert.True(t, handlerCalled, "downstream handler must run after AccessLog")
 	assert.Equal(t, http.StatusOK, w.Code, "status passes through unchanged")
 }
 
-func TestCorsMiddleware_AnyOrigin_GetsWildcardHeaders(t *testing.T) {
+func TestCORS_AnyOrigin_GetsWildcardHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(corsMiddleware())
+	r.Use(CORS())
 	r.POST("/auth", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	w := httptest.NewRecorder()
@@ -118,10 +118,10 @@ func TestCorsMiddleware_AnyOrigin_GetsWildcardHeaders(t *testing.T) {
 	assert.Contains(t, w.Header().Get("Access-Control-Allow-Methods"), "POST")
 }
 
-func TestCorsMiddleware_PreflightOptions_Returns204WithoutHandler(t *testing.T) {
+func TestCORS_PreflightOptions_Returns204WithoutHandler(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(corsMiddleware())
+	r.Use(CORS())
 	r.POST("/auth", func(c *gin.Context) {
 		t.Fatal("downstream handler must NOT run on preflight")
 	})

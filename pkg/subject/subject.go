@@ -3,7 +3,22 @@ package subject
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
+
+// IsValidAccountToken reports whether s can serve as the {account} token of a
+// NATS subject: non-empty, no '.'/'*'/'>' runes, no whitespace or control runes.
+func IsValidAccountToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r == '.' || r == '*' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 
 // ParseUserRoomSubject extracts the user account and roomID from subjects
 // matching the pattern "chat.user.{account}.*.room.{roomID}.…".
@@ -732,11 +747,10 @@ func RoomAppCmdMenuPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.room.{roomID}.%s.app.cmd-menu", siteID)
 }
 
-// isValidAccountToken rejects empty tokens and tokens containing NATS wildcard
-// characters ('*' or '>'). Subject parsers use it as the boundary guard for the
-// account token so wildcard semantics never leak into identity parsing.
+// isValidAccountToken is the parsers' boundary guard for the account token so
+// wildcard semantics never leak into identity parsing.
 func isValidAccountToken(token string) bool {
-	return token != "" && !strings.ContainsAny(token, "*>")
+	return IsValidAccountToken(token)
 }
 
 // ParseRoomCreateSubject extracts the account from chat.user.{account}.request.room.{siteID}.create.

@@ -6,7 +6,6 @@ vi.mock('@/context/NatsContext', () => ({
 }))
 
 vi.mock('@/lib/runtimeConfig', () => ({
-  DEFAULT_SITE_ID: 'site-local',
   DEV_MODE: true,
 }))
 
@@ -38,30 +37,25 @@ describe('LoginPage in DEV_MODE=true', () => {
     runtimeConfig.DEV_MODE = true
   })
 
-  it('renders the dev account form', () => {
+  it('renders the dev account form without a Site ID field', () => {
     useNats.mockReturnValue({ connect: vi.fn(), error: null })
     render(<LoginPage />)
     expect(screen.getByLabelText(/account/i)).toBeInTheDocument()
-    expect(screen.getByLabelText(/site id/i)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/site id/i)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /keycloak/i })).not.toBeInTheDocument()
   })
 
-  it('submits with {mode: "dev", account, siteId}', async () => {
+  it('submits with {mode: "dev", account}', async () => {
     const connect = vi.fn().mockResolvedValue(undefined)
     useNats.mockReturnValue({ connect, error: null })
 
     render(<LoginPage />)
 
     fireEvent.change(screen.getByLabelText(/account/i), { target: { value: 'alice' } })
-    fireEvent.change(screen.getByLabelText(/site id/i), { target: { value: 'site-A' } })
     fireEvent.click(screen.getByRole('button', { name: /connect/i }))
 
     await waitFor(() => {
-      expect(connect).toHaveBeenCalledWith({
-        mode: 'dev',
-        account: 'alice',
-        siteId: 'site-A',
-      })
+      expect(connect).toHaveBeenCalledWith({ mode: 'dev', account: 'alice' })
     })
   })
 
@@ -91,19 +85,19 @@ describe('LoginPage in DEV_MODE=false', () => {
     expect(screen.queryByLabelText(/account/i)).not.toBeInTheDocument()
   })
 
-  it('stores siteId in sessionStorage and calls signinRedirect on button click', async () => {
+  it('redirects to Keycloak without any Site ID input or stash', async () => {
     useNats.mockReturnValue({ connect: vi.fn(), error: null })
     const signinRedirect = vi.fn().mockResolvedValue(undefined)
     getOidcManager.mockReturnValue({ signinRedirect })
 
     render(<LoginPage />)
-    fireEvent.change(screen.getByLabelText(/site id/i), { target: { value: 'site-B' } })
+    expect(screen.queryByLabelText(/site id/i)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /keycloak/i }))
 
     await waitFor(() => {
       expect(signinRedirect).toHaveBeenCalled()
     })
-    expect(window.sessionStorage.getItem('oidc.siteId')).toBe('site-B')
+    expect(window.sessionStorage.getItem('oidc.siteId')).toBeNull()
   })
 
   it('shows an error if signinRedirect throws', async () => {

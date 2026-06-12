@@ -25,8 +25,11 @@ const MAX_REFRESH_ATTEMPTS = RETRY_BACKOFF_MS.length + 1
  *    each /auth, BEFORE connect(), so the getters are populated for the
  *    handshake. Schedules the next refresh when refreshable.
  *  - stop(): clear the timer and creds (call on disconnect).
+ *
+ * getAuthUrl is read at each refresh, so the target can be resolved after
+ * mount (portal lookup).
  */
-export function useJwtRefresh({ authUrl, ncRef }) {
+export function useJwtRefresh({ getAuthUrl, ncRef }) {
   const jwtRef = useRef(null)
   const seedRef = useRef(null)
   const pubKeyRef = useRef(null)
@@ -89,7 +92,7 @@ export function useJwtRefresh({ authUrl, ncRef }) {
     // 2) Re-mint the NATS JWT. Transport failures are transient (retry with
     //    backoff); a 4xx rejection is terminal.
     try {
-      const resp = await fetch(`${authUrl}/auth`, {
+      const resp = await fetch(`${getAuthUrl()}/auth`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ssoToken, natsPublicKey: pubKeyRef.current }),
@@ -122,7 +125,7 @@ export function useJwtRefresh({ authUrl, ncRef }) {
       console.warn('NATS JWT re-mint failed; retrying', { attempt, error: err?.message })
       armTimer(RETRY_BACKOFF_MS[attempt - 1], attempt + 1)
     }
-  }, [authUrl, ncRef, scheduleRefresh, redirect, armTimer])
+  }, [getAuthUrl, ncRef, scheduleRefresh, redirect, armTimer])
 
   // Keep refreshRef current so the timer always calls the latest closure —
   // this breaks the scheduleRefresh <-> refresh dependency cycle.

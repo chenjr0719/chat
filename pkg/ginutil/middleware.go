@@ -1,4 +1,5 @@
-package main
+// Package ginutil holds the Gin middleware shared by the HTTP services: request-ID, access log, CORS.
+package ginutil
 
 import (
 	"log/slog"
@@ -11,11 +12,9 @@ import (
 	"github.com/hmchangw/chat/pkg/natsutil"
 )
 
-// requestIDMiddleware funnels HTTP X-Request-ID through idgen.ResolveRequestID
-// (the same primitive the NATS path uses via natsutil.StampRequestID) so the
-// mint-vs-pass-through policy has a single owner. Missing → silent mint;
-// malformed → mint + Warn preserving the inbound value for traceability.
-func requestIDMiddleware() gin.HandlerFunc {
+// RequestID funnels X-Request-ID through idgen.ResolveRequestID, the single
+// owner of mint-vs-pass-through policy. Missing → mint; malformed → mint + Warn.
+func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		inbound := c.GetHeader(natsutil.RequestIDHeader)
 		id, replaced := idgen.ResolveRequestID(inbound)
@@ -29,11 +28,9 @@ func requestIDMiddleware() gin.HandlerFunc {
 	}
 }
 
-// corsMiddleware allows browser clients from any origin to call the API and
-// short-circuits the preflight OPTIONS request with 204. The wildcard origin
-// is incompatible with credentialed requests (cookies / Authorization), but
-// /auth uses neither — it accepts a JSON body and returns a JWT.
-func corsMiddleware() gin.HandlerFunc {
+// CORS allows any origin and answers preflight OPTIONS with 204. Wildcard is
+// safe here: these endpoints take a JSON body, no cookies or credentials.
+func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -47,8 +44,8 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
-// accessLogMiddleware logs method, path, status, and latency for each request.
-func accessLogMiddleware() gin.HandlerFunc {
+// AccessLog logs method, path, status, and latency for each request.
+func AccessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +17,9 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/hmchangw/chat/pkg/testutil"
 )
 
 // fakeValidator is defined in handler_test.go (same package). The integration
@@ -62,4 +66,40 @@ func TestAuthHandler_Integration(t *testing.T) {
 	// Verify publish permissions contain user namespace.
 	assert.Contains(t, []string(claims.Pub.Allow), "chat.user.testuser.>")
 	assert.Contains(t, []string(claims.Sub.Allow), "chat.room.>")
+}
+
+func TestMain(m *testing.M) { testutil.RunTests(m) }
+
+func TestMongoProvisionStore_AccountProvisioned(t *testing.T) {
+	db := testutil.MongoDB(t, "authsvc")
+	store := newMongoProvisionStore(db)
+	ctx := context.Background()
+
+	// Idempotent against room-service's identical spec — double invocation must not error.
+	require.NoError(t, store.EnsureIndexes(ctx))
+	require.NoError(t, store.EnsureIndexes(ctx))
+
+	_, err := db.Collection("users").InsertMany(ctx, []any{
+		bson.M{"_id": "u-alice", "account": "alice", "siteId": "site-a"},
+		bson.M{"_id": "u-ivan", "account": "ivan", "siteId": "site-b"},
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		account string
+		siteID  string
+		want    bool
+	}{
+		{"provisioned on this site", "alice", "site-a", true},
+		{"homed on another site", "ivan", "site-a", false},
+		{"unknown account", "carol", "site-a", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.AccountProvisioned(ctx, tt.account, tt.siteID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

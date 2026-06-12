@@ -23,7 +23,7 @@ const okResp = (jwt) => ({ ok: true, json: async () => ({ natsJwt: jwt }) })
 const errResp = (status) => ({ ok: false, status, json: async () => ({}) })
 
 function setup({ ncRef = { current: { reconnect: vi.fn() } } } = {}) {
-  const view = renderHook(() => useJwtRefresh({ authUrl: 'http://auth', ncRef }))
+  const view = renderHook(() => useJwtRefresh({ getAuthUrl: () => 'http://auth', ncRef }))
   return { ...view, ncRef }
 }
 
@@ -191,5 +191,20 @@ describe('useJwtRefresh', () => {
     })
     await act(async () => { resolveRenew('sso'); await Promise.resolve() })
     expect(global.fetch).not.toHaveBeenCalled()
+  })
+
+  it('re-mints against the URL the getter returns at refresh time', async () => {
+    renewSsoToken.mockResolvedValue('fresh-sso')
+    global.fetch.mockResolvedValue(okResp(makeJwt(3600)))
+    let authUrl = 'http://auth-initial'
+    const { result } = renderHook(() =>
+      useJwtRefresh({ getAuthUrl: () => authUrl, ncRef: { current: null } }))
+
+    authUrl = 'http://auth.site-a' // resolved later, e.g. by the portal lookup
+    act(() => {
+      result.current.setCredentials({ jwt: makeJwt(100), seed: new Uint8Array([9]), natsPublicKey: 'UPUB', refreshable: true })
+    })
+    await vi.advanceTimersByTimeAsync(95 * 1000)
+    expect(global.fetch).toHaveBeenCalledWith('http://auth.site-a/auth', expect.anything())
   })
 })

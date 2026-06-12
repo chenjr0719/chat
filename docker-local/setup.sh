@@ -110,9 +110,7 @@ chmod 600 "$ENV_FILE"
 # run so devs can edit it (e.g. point at staging) without losing changes.
 if [ ! -f "$FRONTEND_ENV_FILE" ]; then
   cat > "$FRONTEND_ENV_FILE" <<EOF
-VITE_AUTH_URL=http://localhost:8080
-VITE_NATS_URL=ws://localhost:9222
-VITE_DEFAULT_SITE_ID=site-local
+VITE_PORTAL_URL=http://localhost:8081
 EOF
 fi
 

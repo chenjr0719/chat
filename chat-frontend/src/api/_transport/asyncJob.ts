@@ -112,6 +112,7 @@ const REASON_COPY: Record<string, string> = {
   pin_disabled: 'Pinning is turned off for this site.',
   pin_limit_reached: 'This room has reached its pin limit — unpin a message first.',
   pin_room_too_large: 'This room is too large for non-admins to pin.',
+  account_not_provisioned: "Your account isn't set up for chat yet — contact your administrator.",
 }
 
 /**

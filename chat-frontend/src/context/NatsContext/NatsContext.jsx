@@ -1,7 +1,7 @@
 import { createContext, useContext, useRef, useState, useCallback, useMemo } from 'react'
 import { connect as natsConnect, StringCodec } from 'nats.ws'
 import { createUser } from 'nkeys.js'
-import { AUTH_URL, NATS_URL } from '@/lib/runtimeConfig'
+import { PORTAL_URL } from '@/lib/runtimeConfig'
 import { useJwtRefresh } from './useJwtRefresh'
 import {
   requestWithAsyncResult as asyncJobRequest,
@@ -13,34 +13,61 @@ export const NatsContext = createContext(null)
 
 const sc = StringCodec()
 
+// Both services emit the errcode envelope {code, reason?, error, metadata?}.
+// Legacy deployments may return {error} only — callers fall back to message.
+async function throwEnvelopeError(resp, fallbackMsg) {
+  const errBody = await resp.json().catch(() => ({}))
+  throw new AsyncJobError(
+    errBody.error || `${fallbackMsg}: ${resp.status}`,
+    ASYNC_JOB_ERROR_KINDS.SyncError,
+    { code: errBody.code, reason: errBody.reason, metadata: errBody.metadata },
+  )
+}
+
 export function NatsProvider({ children }) {
   const ncRef = useRef(null)
   const [connected, setConnected] = useState(false)
   const [user, setUser] = useState(null)
   const [error, setError] = useState(null)
 
-  const authUrl = AUTH_URL
-  const natsUrl = NATS_URL
+  // Resolved per user by the portal lookup at connect time; the JWT-refresh
+  // loop reads it through the getter so re-mints follow the resolved site.
+  const authUrlRef = useRef(null)
+  const getAuthUrl = useCallback(() => authUrlRef.current, [])
 
-  const { authenticator, setCredentials, stop } = useJwtRefresh({ authUrl, ncRef })
+  const { authenticator, setCredentials, stop } = useJwtRefresh({ getAuthUrl, ncRef })
 
   /**
-   * Authenticate against auth-service and open the NATS WebSocket
-   * connection. On success, `user`/`connected` flip true and any
-   * subsequent server-initiated close updates `error`.
+   * Resolve the user's home site via the portal lookup, authenticate
+   * against that site's auth-service, and open the NATS WebSocket
+   * connection to that site. On success, `user`/`connected` flip true and
+   * any subsequent server-initiated close updates `error`.
    *
    * @param {Object} opts
    * @param {'dev'|'sso'} opts.mode
    * @param {string} [opts.account]   Dev mode: account name to log in as.
    * @param {string} [opts.ssoToken]  Production mode: OIDC access token.
-   * @param {string}  opts.siteId
-   * @throws if auth-service rejects or the NATS handshake fails.
+   * @throws if the portal lookup or auth-service rejects, or the NATS
+   *   handshake fails.
    */
   const connectToNats = useCallback(async (opts) => {
     setError(null)
 
-    const { mode, account, ssoToken, siteId } = opts || {}
+    const { mode, account, ssoToken } = opts || {}
 
+    // 1) Site discovery: which auth-service, which NATS, which siteId.
+    const lookupResp = await fetch(`${PORTAL_URL}/lookup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(mode === 'sso' ? { ssoToken } : { account }),
+    })
+    if (!lookupResp.ok) {
+      await throwEnvelopeError(lookupResp, 'Portal lookup failed')
+    }
+    const portal = await lookupResp.json()
+    authUrlRef.current = portal.authServiceUrl
+
+    // 2) Mint the NATS JWT at the resolved site's auth-service.
     const nkey = createUser()
     const natsPublicKey = nkey.getPublicKey()
 
@@ -49,22 +76,14 @@ export function NatsProvider({ children }) {
         ? { ssoToken, natsPublicKey }
         : { account, natsPublicKey }
 
-    const authResp = await fetch(`${authUrl}/auth`, {
+    const authResp = await fetch(`${portal.authServiceUrl}/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
 
     if (!authResp.ok) {
-      // auth-service emits the errcode envelope {code, reason?, error, metadata?}
-      // via errhttp.Write. Older auth deployments may return {error} only —
-      // err.code is then undefined and consumers fall back to err.message text.
-      const errBody = await authResp.json().catch(() => ({}))
-      throw new AsyncJobError(
-        errBody.error || `Auth failed: ${authResp.status}`,
-        ASYNC_JOB_ERROR_KINDS.SyncError,
-        { code: errBody.code, reason: errBody.reason, metadata: errBody.metadata },
-      )
+      await throwEnvelopeError(authResp, 'Auth failed')
     }
 
     const { natsJwt, user: userInfo } = await authResp.json()
@@ -78,13 +97,14 @@ export function NatsProvider({ children }) {
       refreshable: mode === 'sso',
     })
 
+    // 3) Dial the resolved site's NATS.
     const nc = await natsConnect({
-      servers: natsUrl,
+      servers: portal.natsUrl,
       authenticator,
     })
 
     ncRef.current = nc
-    setUser({ ...userInfo, siteId })
+    setUser({ ...userInfo, siteId: portal.siteId })
     setConnected(true)
 
     nc.closed().then((err) => {
@@ -93,7 +113,7 @@ export function NatsProvider({ children }) {
       }
       setConnected(false)
     })
-  }, [authUrl, natsUrl, authenticator, setCredentials])
+  }, [authenticator, setCredentials])
 
   /**
    * Send a synchronous NATS request/reply. Use this for handlers that

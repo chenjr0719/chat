@@ -1,16 +1,14 @@
 import { useState } from 'react'
 import { useNats } from '@/context/NatsContext'
-import { DEFAULT_SITE_ID, DEV_MODE } from '@/lib/runtimeConfig'
+import { DEV_MODE } from '@/lib/runtimeConfig'
 import { getOidcManager, isSSOTokenInvalidError, redirectToReloginOnTokenInvalid } from '@/api/auth/oidcClient'
 import { formatAsyncJobError } from '@/api'
 import './style.css'
 
 export default function LoginPage() {
   const { connect, error: natsError } = useNats()
-  const defaultSiteId = DEFAULT_SITE_ID
 
   const [account, setAccount] = useState('')
-  const [siteId, setSiteId] = useState(defaultSiteId)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -24,7 +22,6 @@ export default function LoginPage() {
       await connect({
         mode: 'dev',
         account: account.trim(),
-        siteId: siteId.trim(),
       })
     } catch (err) {
       if (isSSOTokenInvalidError(err)) {
@@ -41,8 +38,6 @@ export default function LoginPage() {
     setLoading(true)
     setError(null)
     try {
-      // Stash siteId so the /oidc-callback page can read it after redirect.
-      window.sessionStorage.setItem('oidc.siteId', siteId.trim())
       const manager = getOidcManager()
       await manager.signinRedirect()
       // Browser navigates away — code below this point is unreachable in prod.
@@ -74,15 +69,6 @@ export default function LoginPage() {
             disabled={loading}
           />
 
-          <label htmlFor="siteId">Site ID</label>
-          <input
-            id="siteId"
-            type="text"
-            value={siteId}
-            onChange={(e) => setSiteId(e.target.value)}
-            disabled={loading}
-          />
-
           <button type="submit" disabled={loading || !account.trim()}>
             {loading ? 'Connecting...' : 'Connect'}
           </button>
@@ -100,15 +86,6 @@ export default function LoginPage() {
       <div className="login-form">
         <h1>Chat</h1>
         <p className="login-subtitle">Sign in with Keycloak</p>
-
-        <label htmlFor="siteId">Site ID</label>
-        <input
-          id="siteId"
-          type="text"
-          value={siteId}
-          onChange={(e) => setSiteId(e.target.value)}
-          disabled={loading}
-        />
 
         <button type="button" onClick={handleKeycloakLogin} disabled={loading}>
           {loading ? 'Redirecting...' : 'Sign in with Keycloak'}

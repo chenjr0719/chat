@@ -129,7 +129,7 @@ describe('requestWithAsyncResult', () => {
       })
       await Promise.resolve()
       await Promise.resolve()
-      vi.advanceTimersByTime(600)
+      await vi.advanceTimersByTimeAsync(600)
       const err = await p.catch((e) => e)
       expect(err.kind).toBe(ASYNC_JOB_ERROR_KINDS.AsyncTimeout)
       expect(err.message).toMatch(/timeout/i)
@@ -148,7 +148,7 @@ describe('requestWithAsyncResult', () => {
         asyncTimeout: 100,
       })
       await Promise.resolve(); await Promise.resolve()
-      vi.advanceTimersByTime(200)
+      await vi.advanceTimersByTimeAsync(200)
       await expect(p).rejects.toThrow()
       expect(unsubSpy).toHaveBeenCalled()
     } finally {
@@ -235,6 +235,14 @@ describe('formatAsyncJobError', () => {
       reason: 'max_room_size_reached',
     })
     expect(formatAsyncJobError(err)).toBe('This room is at capacity.')
+  })
+
+  it('maps account_not_provisioned to the contact-administrator copy', () => {
+    const err = new AsyncJobError('account not provisioned for chat', ASYNC_JOB_ERROR_KINDS.SyncError, {
+      code: 'forbidden',
+      reason: 'account_not_provisioned',
+    })
+    expect(formatAsyncJobError(err)).toBe("Your account isn't set up for chat yet — contact your administrator.")
   })
 
   it('returns the humanized copy for not_room_member', () => {

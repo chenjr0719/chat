@@ -1,0 +1,60 @@
+name: portal-service
+
+services:
+  # One-shot directory seed: the local site's connection coordinates plus the
+  # demo users that tools/seed-sample-data also creates in the site DB.
+  portal-seed:
+    image: mongo:8.2.9
+    entrypoint:
+      - mongosh
+      - --host
+      - mongodb
+      - --quiet
+      - --eval
+      - |
+        const p = db.getSiblingDB('portal');
+        p.sites.replaceOne(
+          { _id: 'site-local' },
+          { authServiceUrl: 'http://localhost:8080', natsUrl: 'ws://localhost:9222' },
+          { upsert: true },
+        );
+        [['alice', 'E001'], ['bob', 'E002']].forEach(([account, employeeId]) =>
+          p.users.replaceOne(
+            { _id: 'portal-demo-' + account },
+            { account: account, siteId: 'site-local', employeeId: employeeId },
+            { upsert: true },
+          ),
+        );
+        print('portal seed: sites=' + p.sites.countDocuments() + ' users=' + p.users.countDocuments());
+    networks:
+      - chat-local
+
+  portal-service:
+    build:
+      context: ../..
+      dockerfile: portal-service/deploy/Dockerfile
+    pull_policy: build
+    depends_on:
+      portal-seed:
+        condition: service_completed_successfully
+    ports:
+      - "8081:8081"
+    env_file:
+      - path: ../../docker-local/.env
+        required: false
+    environment:
+      - PORT=8081
+      # Bypass OIDC; accept any account name. Flip to false to test OIDC.
+      - DEV_MODE=${DEV_MODE:-true}
+      - PORTAL_DEV_FALLBACK_SITE_ID=site-local
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=portal
+      - OIDC_ISSUER_URL=http://keycloak:8080/realms/chatapp
+      - OIDC_AUDIENCES=nats-chat
+      - TLS_SKIP_VERIFY=false
+    networks:
+      - chat-local
+
+networks:
+  chat-local:
+    external: true
