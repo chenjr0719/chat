@@ -268,13 +268,19 @@ Room ciphertext envelope (`roomcrypto.EncryptedMessage`). See [§5 Room Encrypti
 #### Subscription
 
 A user's membership record for one room, embedded in `subscription.update`
-events on `added` / `role_updated` / `mute_toggled` / `favorite_toggled`. The
-ID serializes as `id` (not `_id`) and the user under `u` (not `user`). The
-first group is always present; the rest are optional (omitted when empty/unset).
-`userCount` / `lastMsgAt` / `lastMsgId` are **room** properties denormalized
-onto each subscription at read time via room-service's `GetRoomsInfo`
-enrichment — they arrive as flat top-level keys but are not stored on the
-subscription record.
+events on `added` / `role_updated` / `mute_toggled` / `favorite_toggled` and
+returned (enriched) by the user-service subscription endpoints. The ID
+serializes as `id` (not `_id`) and the user under `u` (not `user`). The first
+group is always present; the rest are optional (omitted when empty/unset).
+
+`name` is the **subscription's** display name and depends on the room type:
+the channel name for channels, the counterpart's account for DMs, the app's
+display name for botDMs. It is never overwritten by the room's canonical name.
+
+All room-derived properties live under the nested `room` object
+([SubscriptionRoom](#subscriptionroom)), populated at read time by the
+user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
+**not** present on subscriptions embedded in `subscription.update` events.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -283,11 +289,11 @@ subscription record.
 | `roomId` | string | The room. |
 | `siteId` | string | The room's home site. |
 | `roomType` | string | `"channel"`, `"dm"`, `"botDM"`, or `"discussion"`. |
-| `name` | string | The room's display name. |
+| `name` | string | Display name per room type (see above). |
 | `roles` | string[] | The user's roles in the room (e.g. `["member"]`, `["owner"]`). |
 | `joinedAt` | RFC3339 timestamp | When the user joined. |
-| `hasMention` | boolean | Whether the user has an unread mention. |
-| `alert` | boolean | Whether the room has an unread alert for the user. |
+| `hasMention` | boolean | Whether the user has an unread mention. Computed at read time (see [Enrichment](#enrichment)). |
+| `alert` | boolean | Whether the room has an unread alert for the user. Computed at read time (see [Enrichment](#enrichment)). |
 | `muted` | boolean | Whether the user muted the room. |
 | `favorite` | boolean | Whether the user favorited the room. |
 | `isSubscribed` | boolean | Optional. Whether the user is actively subscribed. |
@@ -296,9 +302,27 @@ subscription record.
 | `threadUnread` | string[] | Optional. Thread room IDs with unread replies. |
 | `restricted` | boolean | Optional. Denormalized room restricted flag. |
 | `externalAccess` | boolean | Optional. Denormalized room external-access flag. |
-| `userCount` | number | Optional. Room-derived: member count (read-time enrichment). |
-| `lastMsgAt` | RFC3339 timestamp | Optional. Room-derived: time of the room's last message (read-time enrichment). |
-| `lastMsgId` | string | Optional. Room-derived: last message ID (read-time enrichment). |
+| `room` | [SubscriptionRoom](#subscriptionroom) | Optional. Room-derived view (read-time enrichment; user-service endpoints only). |
+
+#### SubscriptionRoom
+
+The room-derived view nested on an enriched [Subscription](#subscription).
+Fully populated from room-service's `GetRoomsInfo` RPC; when that RPC fails or
+the room is unknown, a baseline object (`siteId` plus whatever the local DB
+knows: `userCount`, `lastMsgAt`, `lastMsgId` — no name, no key) is returned
+instead. All fields are optional (omitted when zero/unset).
+
+| Field | Type | Notes |
+|---|---|---|
+| `siteId` | string | The room's home site. |
+| `name` | string | The room's canonical name (may differ from the subscription `name`). |
+| `userCount` | number | Member count. |
+| `appCount` | number | App (bot) count. |
+| `lastMsgAt` | RFC3339 timestamp | Time of the room's last message. |
+| `lastMsgId` | string | Last message ID. |
+| `lastMentionAllAt` | RFC3339 timestamp | Time of the last room-wide mention. |
+| `privateKey` | string | Base64-encoded room E2E private key — initial key bootstrap for room members (see [§5](#5-room-encryption)). Only present when the caller's site holds the key. |
+| `keyVersion` | number | Version of `privateKey`. |
 
 #### HrInfo
 
@@ -3037,14 +3061,6 @@ Additional legacy fields may be present, mirroring the `GET /api/v3/users` respo
 
 `user-service` exposes 9 NATS request/reply endpoints over **core NATS** (no JetStream consumers). All subjects follow the pattern `chat.user.{account}.request.user.{siteID}.<area>.<action>`.
 
-The `{account}` in the subject is the **calling user's** account; the service extracts it from the subject to scope every operation.
-
-> **Migration note:** `user-service` replaces the former `mock-user-service` and consolidates several legacy endpoints:
-> - `profile.getByName` (employee profile lookup) is **removed** — use `status.getByName` for status data.
-> - The employee-directory endpoint is **removed** — HR queries go via the search/HR integration.
-> - `getCurrent` / `getRooms` / `getApps` → consolidated into `subscription.list` with the `type` field.
-> - `subscribeApp` / `unsubscribeApp` → replaced by `subscription.setAppSubscription`.
-
 > **Events:** these endpoints emit no client-facing events. (`status.set` triggers a server-side cross-site federation update, which is internal and not delivered to clients.)
 
 #### status.getByName
@@ -3163,11 +3179,22 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 
 `subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below.
 
-**Enrichment behavior:**
-- `name`, `userCount`, `lastMsgAt`, `lastMsgId`, `alert`, and `hasMention` are overwritten from room-service's `GetRoomsInfo` RPC (per site, so cross-site rows are enriched too).
+<a id="enrichment"></a>
+**Enrichment behavior** (shared by `subscription.list`, `subscription.getChannels`, `subscription.getDM`, `subscription.getByRoomID`):
+- Room-derived fields are returned under the nested `room` object ([SubscriptionRoom](#subscriptionroom)), populated from room-service's `GetRoomsInfo` RPC (per site, so cross-site rows are enriched too). The subscription's own fields are never overwritten by room data.
+- `alert` and `hasMention` are **computed** per subscription: `alert` = `room.lastMsgAt` is newer than the user's `lastSeenAt`; `hasMention` = `room.lastMentionAllAt` is newer than `lastSeenAt`.
+- `room.privateKey` / `room.keyVersion` deliver the room's current E2E key to the member — the initial key bootstrap on (re)connect (see §5).
 - Rooms with a `Del-` name prefix are filtered out before enrichment.
-- Subscriptions for rooms whose room-info RPC fails (network error or room not found) are returned **unenriched** (original DB values) rather than dropped.
-- Room-info is fetched per site in parallel using `sync.WaitGroup`; a per-site failure degrades that site's rooms but does not cancel other sites.
+- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId` — no canonical name, no key) rather than dropping them.
+
+**Per-room-type record shape** — the three subscription kinds share one schema and differ only in these fields:
+
+| Field | `channel` | `dm` | `botDM` |
+|---|---|---|---|
+| `name` | Channel name. | Counterpart's account. | App's display name (bot account when the app record is unavailable). |
+| `hrInfo` | — | Counterpart's HR record ([SubscriptionHRInfo](#subscriptionhrinfo)); `subscription.getDM` only. | — |
+| `room.name` | Canonical room name. | Server-generated DM room name. | Server-generated botDM room name. |
+| `room.appCount` | Bots in the channel. | — | ≥ 1. |
 
 ```json
 {
@@ -3185,12 +3212,66 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
       "alert": true,
       "muted": false,
       "favorite": true,
-      "lastMsgAt": "2026-06-01T10:00:00Z",
-      "userCount": 42,
-      "lastMsgId": "01970a4f8c2d7c9aBB"
+      "room": {
+        "siteId": "siteA",
+        "name": "engineering-general",
+        "userCount": 42,
+        "appCount": 2,
+        "lastMsgAt": "2026-06-01T10:00:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aBB",
+        "lastMentionAllAt": "2026-05-30T08:00:00Z",
+        "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
+        "keyVersion": 3
+      }
+    },
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9c",
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
+      "roomId": "alice_bob",
+      "siteId": "siteA",
+      "roomType": "dm",
+      "roles": ["member"],
+      "name": "bob",
+      "joinedAt": "2026-04-01T09:00:00Z",
+      "hasMention": false,
+      "alert": false,
+      "muted": false,
+      "favorite": false,
+      "room": {
+        "siteId": "siteA",
+        "name": "alice_bob",
+        "userCount": 2,
+        "lastMsgAt": "2026-05-20T15:30:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aCC",
+        "privateKey": "cXdlcnR5...base64...dWlvcD09",
+        "keyVersion": 1
+      }
+    },
+    {
+      "id": "01970a4f8c2d7c9a01970a4f8c2d7c9d",
+      "u": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice", "isBot": false },
+      "roomId": "alice_helper.bot",
+      "siteId": "siteA",
+      "roomType": "botDM",
+      "roles": ["member"],
+      "name": "Helper",
+      "isSubscribed": true,
+      "joinedAt": "2026-03-15T11:00:00Z",
+      "hasMention": false,
+      "alert": false,
+      "muted": false,
+      "favorite": false,
+      "room": {
+        "siteId": "siteA",
+        "name": "alice_helper.bot",
+        "userCount": 1,
+        "appCount": 1,
+        "lastMsgAt": "2026-05-01T08:00:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aDD"
+      }
     }
   ],
-  "total": 1
+  "total": 3
 }
 ```
 
@@ -3226,7 +3307,7 @@ Exactly one of the two fields must be set:
 
 ##### Success response
 
-Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` with room-info enrichment applied.
+Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` with [enrichment](#enrichment) applied.
 
 ```json
 {
@@ -3244,9 +3325,16 @@ Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` w
       "alert": true,
       "muted": false,
       "favorite": true,
-      "lastMsgAt": "2026-06-01T10:00:00Z",
-      "userCount": 42,
-      "lastMsgId": "01970a4f8c2d7c9aBB"
+      "room": {
+        "siteId": "siteA",
+        "name": "engineering-general",
+        "userCount": 42,
+        "appCount": 2,
+        "lastMsgAt": "2026-06-01T10:00:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aBB",
+        "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
+        "keyVersion": 3
+      }
     }
   ],
   "total": 1
@@ -3307,7 +3395,16 @@ Returns the calling user's DM subscription with the named counterpart. The reply
     "hasMention": false,
     "muted": false,
     "favorite": false,
-    "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" }
+    "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
+    "room": {
+      "siteId": "siteA",
+      "name": "alice_bob",
+      "userCount": 2,
+      "lastMsgAt": "2026-05-20T15:30:00Z",
+      "lastMsgId": "01970a4f8c2d7c9aCC",
+      "privateKey": "cXdlcnR5...base64...dWlvcD09",
+      "keyVersion": 1
+    }
   }
 }
 ```
@@ -3364,7 +3461,16 @@ Same shape as `subscription.list` — a (here, at most one) list:
       "alert": false,
       "hasMention": false,
       "muted": false,
-      "favorite": false
+      "favorite": false,
+      "room": {
+        "siteId": "siteA",
+        "name": "alice_bob",
+        "userCount": 2,
+        "lastMsgAt": "2026-05-20T15:30:00Z",
+        "lastMsgId": "01970a4f8c2d7c9aCC",
+        "privateKey": "cXdlcnR5...base64...dWlvcD09",
+        "keyVersion": 1
+      }
     }
   ],
   "total": 1
@@ -3884,7 +3990,7 @@ Clients are already authorized for `chat.user.{theirAccount}.>` and receive key 
 
 Removed members keep prior keys for decrypting historical messages but cannot decrypt anything published after the rotation.
 
-**Initial key bootstrap on (re)connect:** live `RoomKeyEvent`s fire only when keys change. The initial set of keys for rooms the client is already subscribed to will be delivered as part of the `subscription.list`-based bootstrap (see §3.4 for the consolidated user-service subscription contract). Until that extension lands, clients receive keys only via live events.
+**Initial key bootstrap on (re)connect:** live `RoomKeyEvent`s fire only when keys change. The initial set of keys for rooms the client is already subscribed to is delivered by the user-service subscription endpoints as `room.privateKey` / `room.keyVersion` on each enriched subscription (see §3.4 and [SubscriptionRoom](#subscriptionroom)). Live events keep the client current after bootstrap.
 
 ### Requesting a missing key
 

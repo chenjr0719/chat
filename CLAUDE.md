@@ -22,12 +22,6 @@
 
 **Event flow:** User publishes message to MESSAGES stream → `message-gatekeeper` validates and publishes to MESSAGES_CANONICAL → `message-worker` persists to Cassandra, `broadcast-worker` delivers to room members, `notification-worker` sends notifications → cross-site events flow via OUTBOX/INBOX streams.
 
-**Key services:**
-- `room-service` — NATS request/reply; owns room lifecycle, membership, and role management (MongoDB + Cassandra for message history via downstream workers).
-- `user-service` — NATS request/reply, **no JetStream**; owns user status, subscriptions, and app associations (MongoDB). Exposes 9 endpoints: `status.getByName`, `status.set`, `subscription.list`, `subscription.getChannels`, `subscription.getDM`, `subscription.getByRoomID`, `subscription.count`, `subscription.setAppSubscription`, `apps.list`. Publishes `UserStatusUpdated` to outbox NATS subjects (core NATS, not JetStream) for cross-site federation on status changes.
-- `history-service` — NATS request/reply; reads message history from Cassandra.
-- `search-service` — NATS request/reply; full-text search.
-
 **Multi-site federation:** Each site runs independently with its own NATS, MongoDB, and Cassandra. Cross-site events use the Outbox/Inbox pattern — local events go to the OUTBOX stream, remote sites source from it into their INBOX stream. User subscriptions and room metadata are scoped by `siteID`.
 
 **Repo structure:** Monorepo with single `go.mod` at root. Services are flat `package main` directories at the repo root — no `cmd/` or `internal/`. Shared code lives in `pkg/`. Each service has a `deploy/` subdirectory with Dockerfile, docker-compose.yml, and azure-pipelines.yml. Claude discovers services by exploring the repo.
