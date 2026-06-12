@@ -22,7 +22,7 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	// Seed rooms for every local sub that must survive — deleted-filter drops local subs with no room doc.
 	seed(t, db, "rooms",
 		bson.M{"_id": "r-eng", "name": "Eng", "siteId": "site-a", "userCount": 5,
-			"lastMsgId": "m-eng", "lastMsgAt": now},
+			"lastMsgId": "m-eng", "lastMsgAt": now, "lastMentionAllAt": now},
 		// distinct room for the stale sub-old row (a user can't sub the same room twice)
 		bson.M{"_id": "r-eng-old", "name": "EngOld", "siteId": "site-a", "userCount": 1, "lastMsgAt": old},
 		bson.M{"_id": "r-dm", "name": "DM-bob", "siteId": "site-a", "userCount": 2,
@@ -89,6 +89,7 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		assert.Equal(t, 5, eng.UserCount)
 		assert.Equal(t, "m-eng", eng.LastMsgID)
 		require.NotNil(t, eng.LastMsgAt)
+		require.NotNil(t, eng.LastMentionAllAt, "$lookup baseline must carry lastMentionAllAt for degraded-path hasMention")
 		xsite := subs[byID["sub-xsite"]]
 		assert.Equal(t, 0, xsite.UserCount, "cross-site has no local enrichment")
 		assert.Empty(t, xsite.LastMsgID)

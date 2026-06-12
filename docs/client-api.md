@@ -309,8 +309,8 @@ user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
 The room-derived view nested on an enriched [Subscription](#subscription).
 Fully populated from room-service's `GetRoomsInfo` RPC; when that RPC fails or
 the room is unknown, a baseline object (`siteId` plus whatever the local DB
-knows: `userCount`, `lastMsgAt`, `lastMsgId` — no name, no key) is returned
-instead. All fields are optional (omitted when zero/unset).
+knows: `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no name, no
+key) is returned instead. All fields are optional (omitted when zero/unset).
 
 | Field | Type | Notes |
 |---|---|---|
@@ -3225,7 +3225,7 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 - `alert` and `hasMention` are **computed** per subscription: `alert` = `room.lastMsgAt` is newer than the user's `lastSeenAt`; `hasMention` = `room.lastMentionAllAt` is newer than `lastSeenAt`.
 - `room.privateKey` / `room.keyVersion` deliver the room's current E2E key to the member — the initial key bootstrap on (re)connect (see §5).
 - Rooms with a `Del-` name prefix are filtered out before enrichment.
-- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId` — no canonical name, no key) rather than dropping them.
+- Room-info is fetched per site in parallel; a per-site RPC failure degrades that site's rows to a **baseline** `room` object (local DB values: `siteId`, `userCount`, `lastMsgAt`, `lastMsgId`, `lastMentionAllAt` — no canonical name, no key) rather than dropping them. `alert` and `hasMention` are still computed from these baseline timestamps, so they remain correct on a degraded site.
 
 **Per-room-type record shape** — the three subscription kinds share one schema and differ only in these fields:
 

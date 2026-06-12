@@ -73,9 +73,10 @@ func roomsEnrichStages(localSiteID string, windowCutoff *time.Time) bson.A {
 	}
 	return append(stages,
 		bson.M{"$addFields": bson.M{
-			"userCount": "$room.userCount",
-			"lastMsgAt": "$room.lastMsgAt",
-			"lastMsgId": "$room.lastMsgId",
+			"userCount":        "$room.userCount",
+			"lastMsgAt":        "$room.lastMsgAt",
+			"lastMsgId":        "$room.lastMsgId",
+			"lastMentionAllAt": "$room.lastMentionAllAt",
 		}},
 		bson.M{"$project": bson.M{"room": 0}},
 	)
@@ -183,9 +184,10 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 		// Sort by the room's createdAt DESC while "room" is still available.
 		bson.M{"$sort": bson.D{{Key: "room.createdAt", Value: -1}}},
 		bson.M{"$addFields": bson.M{
-			"userCount": "$room.userCount",
-			"lastMsgAt": "$room.lastMsgAt",
-			"lastMsgId": "$room.lastMsgId",
+			"userCount":        "$room.userCount",
+			"lastMsgAt":        "$room.lastMsgAt",
+			"lastMsgId":        "$room.lastMsgId",
+			"lastMentionAllAt": "$room.lastMentionAllAt",
 		}},
 		bson.M{"$project": bson.M{"room": 0}},
 		bson.M{"$limit": int64(limit)},

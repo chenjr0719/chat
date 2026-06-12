@@ -96,6 +96,24 @@ func TestEnrichWithRoomInfo_Empty(t *testing.T) {
 	svc.enrichWithRoomInfo(ctx("alice", "site-a"), []model.Subscription{})
 }
 
+func TestEnrichWithRoomInfo_DegradedSite_ComputesUnreadFromBaseline(t *testing.T) {
+	svc, _, _, _, rooms, _ := newSvc(t)
+	seen := time.UnixMilli(100).UTC()
+	lastMsg := time.UnixMilli(200).UTC()
+	mention := time.UnixMilli(300).UTC()
+	subs := []model.Subscription{
+		{ID: "a", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen,
+			UserCount: 4, LastMsgAt: &lastMsg, LastMsgID: "m1", LastMentionAllAt: &mention},
+	}
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-a", []string{"r1"}).Return(nil, errors.New("down"))
+	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
+	require.NotNil(t, subs[0].Room)
+	require.NotNil(t, subs[0].Room.LastMentionAllAt, "baseline mention must surface on the room object")
+	assert.Equal(t, mention.UnixMilli(), subs[0].Room.LastMentionAllAt.UnixMilli())
+	assert.True(t, subs[0].Alert, "alert must be computed from the baseline lastMsgAt on a degraded site")
+	assert.True(t, subs[0].HasMention, "hasMention must be computed from the baseline mention on a degraded site")
+}
+
 func TestUnread(t *testing.T) {
 	seen := time.UnixMilli(100).UTC()
 	older := int64(50)

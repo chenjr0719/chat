@@ -149,16 +149,21 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 		}
 	}
 	// Degraded site or room not found ⇒ baseline room from the Mongo $lookup
-	// values, so the client always receives a room object.
+	// values, so the client always receives a room object. alert/hasMention are
+	// computed from the baseline too, for parity with the RPC path above.
 	for i := range subs {
-		if subs[i].Room == nil {
-			subs[i].Room = &model.SubscriptionRoom{
-				SiteID:    subs[i].SiteID,
-				UserCount: subs[i].UserCount,
-				LastMsgAt: subs[i].LastMsgAt,
-				LastMsgID: subs[i].LastMsgID,
-			}
+		if subs[i].Room != nil {
+			continue
 		}
+		subs[i].Room = &model.SubscriptionRoom{
+			SiteID:           subs[i].SiteID,
+			UserCount:        subs[i].UserCount,
+			LastMsgAt:        subs[i].LastMsgAt,
+			LastMsgID:        subs[i].LastMsgID,
+			LastMentionAllAt: subs[i].LastMentionAllAt,
+		}
+		subs[i].Alert = unreadAt(subs[i].LastSeenAt, subs[i].LastMsgAt)
+		subs[i].HasMention = unreadAt(subs[i].LastSeenAt, subs[i].LastMentionAllAt)
 	}
 }
 
@@ -202,6 +207,19 @@ func unread(lastSeen *time.Time, ms *int64) bool {
 		return true
 	}
 	return lastSeen.UTC().UnixMilli() < *ms
+}
+
+// unreadAt is unread for *time.Time event timestamps — the $lookup baseline carries
+// time.Time (not epoch millis), used on the degraded path. nil event ⇒ false; nil
+// lastSeen with an event ⇒ true; equal ⇒ read (strict before).
+func unreadAt(lastSeen, event *time.Time) bool {
+	if event == nil {
+		return false
+	}
+	if lastSeen == nil {
+		return true
+	}
+	return lastSeen.UTC().Before(event.UTC())
 }
 
 func filterFavorites(subs []model.Subscription) []model.Subscription {
