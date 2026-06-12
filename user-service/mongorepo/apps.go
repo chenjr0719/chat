@@ -65,7 +65,7 @@ func (r *AppRepo) ListApps(ctx context.Context, account string, page mongoutil.O
 func (r *AppRepo) GetAppNamesByAssistants(ctx context.Context, botAccounts []string) (map[string]string, error) {
 	apps, err := r.apps.FindMany(ctx,
 		bson.M{"assistant.name": bson.M{"$in": botAccounts}},
-		mongoutil.WithProjection(bson.M{"name": 1, "assistant.name": 1}),
+		mongoutil.WithProjection(bson.M{"_id": 0, "name": 1, "assistant.name": 1}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("find apps by assistant names: %w", err)

@@ -34,6 +34,34 @@ func TestGetStatusByName_NotFound(t *testing.T) {
 	requireCode(t, err, errcode.CodeNotFound)
 }
 
+// profile.getByName is an intentional twin of status.getByName (same request,
+// same response fields, same users-collection query) — divergence is a bug.
+func TestGetProfileByName_IdenticalToStatus(t *testing.T) {
+	svc, _, users, _, _, _ := newSvc(t)
+	users.EXPECT().GetUserStatus(gomock.Any(), "bob").
+		Return(&model.User{Account: "bob", StatusText: "hi", StatusIsShow: true, EngName: "Bob", ChineseName: "鮑勃"}, nil).
+		Times(2)
+	status, err := svc.GetStatusByName(ctx("alice", "site-a"), models.StatusGetByNameRequest{Name: "bob"})
+	require.NoError(t, err)
+	profile, err := svc.GetProfileByName(ctx("alice", "site-a"), models.StatusGetByNameRequest{Name: "bob"})
+	require.NoError(t, err)
+	assert.Equal(t, status, profile, "profile.getByName must return exactly what status.getByName returns")
+}
+
+func TestGetProfileByName_NotFound(t *testing.T) {
+	svc, _, users, _, _, _ := newSvc(t)
+	users.EXPECT().GetUserStatus(gomock.Any(), "ghost").Return(nil, nil)
+	_, err := svc.GetProfileByName(ctx("alice", "site-a"), models.StatusGetByNameRequest{Name: "ghost"})
+	requireCode(t, err, errcode.CodeNotFound)
+}
+
+func TestGetProfileByName_StoreError(t *testing.T) {
+	svc, _, users, _, _, _ := newSvc(t)
+	users.EXPECT().GetUserStatus(gomock.Any(), "bob").Return(nil, errors.New("db unavailable"))
+	_, err := svc.GetProfileByName(ctx("alice", "site-a"), models.StatusGetByNameRequest{Name: "bob"})
+	requireCode(t, err, errcode.CodeInternal)
+}
+
 func TestSetStatus_TooLong(t *testing.T) {
 	svc, _, _, _, _, _ := newSvc(t)
 	_, err := svc.SetStatus(ctx("alice", "site-a"), models.StatusSetRequest{Text: string(make([]byte, 513))})

@@ -80,6 +80,7 @@ func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, 
 // siteID is a literal token in each pattern — this instance only subscribes to its own siteID subjects.
 func (s *UserService) RegisterHandlers(r *natsrouter.Router) {
 	natsrouter.Register(r, subject.UserStatusGetByNamePattern(s.siteID), s.GetStatusByName)
+	natsrouter.Register(r, subject.UserProfileGetByNamePattern(s.siteID), s.GetProfileByName)
 	natsrouter.Register(r, subject.UserStatusSetPattern(s.siteID), s.SetStatus)
 	natsrouter.Register(r, subject.UserSubscriptionListPattern(s.siteID), s.ListSubscriptions)
 	natsrouter.Register(r, subject.UserSubscriptionGetChannelsPattern(s.siteID), s.GetChannels)

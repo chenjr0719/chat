@@ -59,8 +59,8 @@ func activeUserFilter(account string) bson.M {
 func (r *UserRepo) GetUserStatus(ctx context.Context, account string) (*model.User, error) {
 	return r.users.FindOne(ctx, activeUserFilter(account),
 		mongoutil.WithProjection(bson.M{
-			"account": 1, "statusText": 1, "statusIsShow": 1,
-			"chineseName": 1, "engName": 1, "_id": 0,
+			"_id": 0, "account": 1, "statusText": 1, "statusIsShow": 1,
+			"chineseName": 1, "engName": 1,
 		}),
 	)
 }

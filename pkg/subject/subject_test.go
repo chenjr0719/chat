@@ -518,6 +518,7 @@ func TestUserServiceBuilders(t *testing.T) {
 		want string
 	}{
 		{"status.getByName", subject.UserStatusGetByName("alice", "s1"), "chat.user.alice.request.user.s1.status.getByName"},
+		{"profile.getByName", subject.UserProfileGetByName("alice", "s1"), "chat.user.alice.request.user.s1.profile.getByName"},
 		{"status.set", subject.UserStatusSet("alice", "s1"), "chat.user.alice.request.user.s1.status.set"},
 		{"subscription.getChannels", subject.UserSubscriptionGetChannels("alice", "s1"), "chat.user.alice.request.user.s1.subscription.getChannels"},
 		{"subscription.getDM", subject.UserSubscriptionGetDM("alice", "s1"), "chat.user.alice.request.user.s1.subscription.getDM"},
@@ -653,6 +654,7 @@ func TestUserServiceBuildersRejectWildcardAccounts(t *testing.T) {
 		fn   func()
 	}{
 		{"UserStatusGetByName", func() { subject.UserStatusGetByName("*", "s1") }},
+		{"UserProfileGetByName", func() { subject.UserProfileGetByName("*", "s1") }},
 		{"UserStatusSet", func() { subject.UserStatusSet("*", "s1") }},
 		{"UserSubscriptionGetChannels", func() { subject.UserSubscriptionGetChannels("*", "s1") }},
 		{"UserSubscriptionGetDM", func() { subject.UserSubscriptionGetDM(">", "s1") }},
@@ -752,6 +754,7 @@ func TestUserServicePatternBuilders(t *testing.T) {
 		want string
 	}{
 		{"status.getByName", subject.UserStatusGetByNamePattern("s1"), "chat.user.{account}.request.user.s1.status.getByName"},
+		{"profile.getByName", subject.UserProfileGetByNamePattern("s1"), "chat.user.{account}.request.user.s1.profile.getByName"},
 		{"status.set", subject.UserStatusSetPattern("s1"), "chat.user.{account}.request.user.s1.status.set"},
 		{"subscription.getChannels", subject.UserSubscriptionGetChannelsPattern("s1"), "chat.user.{account}.request.user.s1.subscription.getChannels"},
 		{"subscription.getDM", subject.UserSubscriptionGetDMPattern("s1"), "chat.user.{account}.request.user.s1.subscription.getDM"},

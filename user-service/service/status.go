@@ -34,6 +34,15 @@ func (s *UserService) GetStatusByName(c *natsrouter.Context, req models.StatusGe
 	}, nil
 }
 
+// GetProfileByName is an intentional twin of GetStatusByName — same request,
+// same response fields, same users-collection query; clients use it as the
+// profile lookup. This endpoint should fetch data from the HR collection
+// before querying the Mongo users collection for statusIsShow and statusText;
+// not implemented here as it needs to be done in the internal repo.
+func (s *UserService) GetProfileByName(c *natsrouter.Context, req models.StatusGetByNameRequest) (*models.StatusView, error) {
+	return s.GetStatusByName(c, req)
+}
+
 func (s *UserService) SetStatus(c *natsrouter.Context, req models.StatusSetRequest) (*models.StatusView, error) {
 	account := c.Param("account")
 	c.WithLogValues("account", account)
