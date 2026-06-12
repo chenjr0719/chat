@@ -1921,21 +1921,42 @@ func TestMongoStore_UpdateSubscriptionNamesForRoom_StampsTimestamp(t *testing.T)
 	ctx := context.Background()
 
 	mustInsertSub(t, db, &model.Subscription{
-		ID:     "s1",
-		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID: "r1",
-		SiteID: "site-a",
-		Name:   "old",
+		ID:       "s1",
+		User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID:   "r1",
+		SiteID:   "site-a",
+		RoomType: model.RoomTypeChannel,
+		Roles:    []model.Role{model.RoleMember},
+		JoinedAt: time.Now().UTC(),
+		Name:     "old",
 	})
+
+	subName := func() (string, time.Time) {
+		t.Helper()
+		var doc bson.M
+		require.NoError(t, db.Collection("subscriptions").
+			FindOne(ctx, bson.M{"roomId": "r1", "u.account": "alice"}).Decode(&doc))
+		dt, ok := doc["nameUpdatedAt"].(bson.DateTime)
+		require.True(t, ok, "nameUpdatedAt is %T, want bson.DateTime", doc["nameUpdatedAt"])
+		return doc["name"].(string), dt.Time().UTC()
+	}
 
 	ts := time.Now().UTC()
 	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "new", ts))
+	gotName, gotTs := subName()
+	assert.Equal(t, "new", gotName)
+	assert.Equal(t, ts.UnixMilli(), gotTs.UnixMilli())
 
-	var doc bson.M
-	require.NoError(t, db.Collection("subscriptions").
-		FindOne(ctx, bson.M{"roomId": "r1", "u.account": "alice"}).Decode(&doc))
-	assert.Equal(t, "new", doc["name"])
-	dt, ok := doc["nameUpdatedAt"].(bson.DateTime)
-	require.True(t, ok, "nameUpdatedAt is %T, want bson.DateTime", doc["nameUpdatedAt"])
-	assert.Equal(t, ts.UnixMilli(), dt.Time().UTC().UnixMilli())
+	// Older rename is a guarded no-op — name and high-water mark unchanged.
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "stale", ts.Add(-time.Second)))
+	gotName, gotTs = subName()
+	assert.Equal(t, "new", gotName, "stale rename must not regress a newer name")
+	assert.Equal(t, ts.UnixMilli(), gotTs.UnixMilli())
+
+	// Newer rename advances both name and high-water mark.
+	newer := ts.Add(time.Second)
+	require.NoError(t, store.UpdateSubscriptionNamesForRoom(ctx, "r1", "newest", newer))
+	gotName, gotTs = subName()
+	assert.Equal(t, "newest", gotName)
+	assert.Equal(t, newer.UnixMilli(), gotTs.UnixMilli())
 }

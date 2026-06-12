@@ -4698,6 +4698,7 @@ func TestHandler_FavoriteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	// The origin doc's favoriteUpdatedAt and the published event timestamp must
 	// be the same instant so remote replicas guard against one high-water mark.
 	assert.False(t, favoriteTs.IsZero())
+	assert.Equal(t, favoriteTs.UnixMilli(), outbox.Timestamp)
 	assert.Equal(t, favoriteTs.UnixMilli(), payload.Timestamp)
 }
 
