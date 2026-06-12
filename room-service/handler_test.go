@@ -3701,14 +3701,18 @@ func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
+	var muteTs time.Time
 	store.EXPECT().
 		ToggleSubscriptionMute(gomock.Any(), "r1", "alice", gomock.Any()).
-		Return(&model.Subscription{
-			User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
-			RoomID: "r1",
-			SiteID: "site-a",
-			Muted:  true,
-		}, nil)
+		DoAndReturn(func(_ context.Context, _, _ string, ts time.Time) (*model.Subscription, error) {
+			muteTs = ts
+			return &model.Subscription{
+				User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+				RoomID: "r1",
+				SiteID: "site-a",
+				Muted:  true,
+			}, nil
+		})
 	store.EXPECT().
 		GetUserSiteID(gomock.Any(), "alice").
 		Return("site-b", nil)
@@ -3742,6 +3746,11 @@ func TestHandler_MuteToggle_CrossSitePublishesOutbox(t *testing.T) {
 	assert.Equal(t, "r1", payload.RoomID)
 	assert.True(t, payload.Muted)
 	assert.NotZero(t, payload.Timestamp)
+	// Origin write, outbox envelope, and payload must all carry the same instant
+	// so the remote replica guards against one high-water mark.
+	assert.False(t, muteTs.IsZero())
+	assert.Equal(t, muteTs.UnixMilli(), outbox.Timestamp)
+	assert.Equal(t, muteTs.UnixMilli(), payload.Timestamp)
 }
 
 func TestHandler_MuteToggle_NotRoomMember(t *testing.T) {
