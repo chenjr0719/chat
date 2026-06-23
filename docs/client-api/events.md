@@ -687,7 +687,7 @@ and the actor is not the author. Not emitted for reaction removals.
 | `reactionDelta` | [ReactionDelta](#reactiondelta) | The single-reaction delta that triggered the notification. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
 
-#### ReactionDelta
+### ReactionDelta
 
 | Field | Type | Notes |
 |---|---|---|
