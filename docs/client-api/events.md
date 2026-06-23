@@ -25,7 +25,7 @@ For connection, auth, and error details see [../client-api.md](../client-api.md)
    - [message_pinned / message_unpinned (PinStateRoomEvent)](#message_pinned--message_unpinned-pinstateroomevent)
    - [message_reacted (ReactRoomEvent)](#message_reacted-reactroomevent)
    - [thread_metadata_updated (ThreadMetadataUpdatedEvent)](#thread_metadata_updated-threadmetadataupdatedevent)
-   - [message_read (MessageReadEvent)](#message_read-messagereaadevent)
+   - [message_read (MessageReadEvent)](#message_read-messagereadevent)
    - [room_renamed (RoomRenamedRoomEvent)](#room_renamed-roomrenamedroomevent)
    - [room_restricted (RoomRestrictedRoomEvent)](#room_restricted-roomrestrictedroomevent)
 5. [member — room membership events](#member--room-membership-events)
@@ -415,7 +415,7 @@ Triggered by [Pin Message](request-reply.md#pin-message) and
 [Unpin Message](request-reply.md#unpin-message).
 
 **Subjects:** channel rooms → `chat.room.{roomID}.event`; DM/botDM rooms →
-`chat.user.{account}.room.event` per non-bot member.
+`chat.user.{account}.event.room` per non-bot member.
 
 Not published when the request hits an already-pinned (pin) or already-unpinned (unpin)
 message (idempotent short-circuit).
