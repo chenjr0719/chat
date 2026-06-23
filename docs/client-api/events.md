@@ -1,4 +1,4 @@
-> Frontend-oriented view derived from client-api.md @ 0d89e7f3. Canonical source: ../client-api.md — if they disagree, client-api.md wins.
+> Request/Reply and Events views of the chat client API — see also [client-api.md](../client-api.md).
 
 <!-- last synced: client-api.md @ 0d89e7f3 -->
 
