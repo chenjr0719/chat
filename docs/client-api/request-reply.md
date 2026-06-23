@@ -382,7 +382,7 @@ Synchronous RPC. Advances the caller's `lastSeenAt`, recomputes the per-subscrip
 
 `"only room members can perform this action"` (`forbidden`, `not_room_member`).
 
-**Emits:** [`subscription.update`](events.md#subscriptionupdate--membership--state-changes) (`action: "read"` — to the reader, non-bot only; not fired on early-return paths), [`message_read`](events.md#message_read-messagereaadevent) (floor advance events — only when `Room.MinUserLastSeenAt` changes) → [events.md](events.md)
+**Emits:** [`subscription.update`](events.md#subscriptionupdate--membership--state-changes) (`action: "read"` — to the reader, non-bot only; not fired on early-return paths), [`message_read`](events.md#message_read-messagereadevent) (floor advance events — only when `Room.MinUserLastSeenAt` changes) → [events.md](events.md)
 
 ---
 
