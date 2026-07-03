@@ -1,6 +1,6 @@
 > Request/Reply and Events views of the chat client API — see also [client-api.md](../client-api.md).
 
-<!-- last synced: client-api.md @ 0d89e7f3 -->
+<!-- last synced: client-api.md @ 3cabb454 -->
 
 # Chat — Server-to-Client Events
 
@@ -26,6 +26,7 @@ For connection, auth, and error details see [../client-api.md](../client-api.md)
    - [message_reacted (ReactRoomEvent)](#message_reacted-reactroomevent)
    - [thread_metadata_updated (ThreadMetadataUpdatedEvent)](#thread_metadata_updated-threadmetadataupdatedevent)
    - [message_read (MessageReadEvent)](#message_read-messagereadevent)
+   - [thread_message_read](#thread_message_read)
    - [room_renamed (RoomRenamedRoomEvent)](#room_renamed-roomrenamedroomevent)
    - [room_restricted (RoomRestrictedRoomEvent)](#room_restricted-roomrestrictedroomevent)
 5. [member — room membership events](#member--room-membership-events)
@@ -43,7 +44,7 @@ For connection, auth, and error details see [../client-api.md](../client-api.md)
 | `chat.user.{account}.response.{requestID}` | AsyncJobResult (one-shot async job completion) |
 | `chat.user.{account}.event.subscription.update` | SubscriptionUpdateEvent / SubscriptionRemovedEvent |
 | `chat.user.{account}.event.room.key` | RoomKeyEvent |
-| `chat.room.{roomID}.event` | new_message, message_edited, message_deleted, message_pinned/unpinned, message_reacted, thread_metadata_updated, message_read, room_renamed, room_restricted |
+| `chat.room.{roomID}.event` | new_message, message_edited, message_deleted, message_pinned/unpinned, message_reacted, thread_metadata_updated, message_read, thread_message_read, room_renamed, room_restricted |
 | `chat.user.{account}.event.room` | same event types as above, per-user fan-out for DM/botDM rooms |
 | `chat.room.{roomID}.event.member` | member_added, member_left / member_removed |
 | `chat.user.{account}.notification` | NotificationEvent (reaction only) |
@@ -258,8 +259,7 @@ Cassandra projection).
 | `userDisplayName` | string | Optional. Render-ready sender name. |
 | `content` | string | The message body. |
 | `sender` | [Participant](../client-api.md#participant) | Optional. Enriched sender identity. |
-| `attachments` | string[] | Optional. Base64-encoded bytes. |
-| `file` | [MessageFile](../client-api.md#messagefile) | Optional. |
+| `attachments` | [Attachment](../client-api.md#attachment)[] | Optional. Decoded attachment objects (same shape as history). |
 | `card` | [MessageCard](../client-api.md#messagecard) | Optional. |
 | `cardAction` | [MessageCardAction](../client-api.md#messagecardaction) | Optional. |
 | `mentions` | [Participant](../client-api.md#participant)[] | Optional. |
@@ -267,7 +267,6 @@ Cassandra projection).
 | `editedAt` | string | Optional. RFC 3339. |
 | `updatedAt` | string | Optional. RFC 3339. |
 | `threadParentMessageId` | string | Optional. Set for a thread reply. |
-| `threadParentMessageCreatedAt` | string | Optional. RFC 3339. |
 | `tshow` | boolean | Optional. Whether a thread reply is also shown in the parent room. |
 | `type` | string | Optional. System-message type. |
 | `sysMsgData` | string | Optional. Base64-encoded raw JSON payload for system messages. |
@@ -514,7 +513,7 @@ independently.
 | `eventTimestamp` | number | Optional. Epoch ms (UTC). When message-worker published the canonical event. Prefer over `timestamp` for ordering. |
 | `parentMessageId` | string | The thread parent message's ID. Use to locate the message in your cache and update its badge. |
 | `replyMessageId` | string | The reply that was added or deleted. |
-| `newTcount` | number | Authoritative reply count for the parent message. Apply directly — do not delta. |
+| `newTcount` | number | Authoritative reply count for the parent message, capped at 99 (99 means "99 or more"). Apply directly — do not delta. |
 | `newThreadLastMsgAt` | string (ISO 8601) | Optional. Timestamp of the most recent surviving thread reply. Absent when `newTcount` is 0. |
 | `action` | string | `"reply_added"` or `"reply_deleted"`. |
 
@@ -560,6 +559,39 @@ separately in client-api.md §3.1 and §3.2; both are included here. -->
 {
   "type": "message_read",
   "roomId": "Rb3kQ2",
+  "minUserLastSeenAt": "2026-06-09T10:30:00Z",
+  "timestamp": 1749465000123
+}
+```
+
+---
+
+### thread_message_read
+
+Published only when a thread's read floor (`thread_rooms.minUserLastSeenAt`) advances.
+Triggered by [Mark Thread as Read](request-reply.md#mark-thread-as-read). Best-effort — a
+publish failure does not fail the RPC; never fires when the floor is unchanged or the
+thread room is missing.
+
+**Subjects — routed by the *parent* room's type:**
+- Channel parent → `chat.room.{roomID}.event` — one event to every client subscribed to
+  the parent room.
+- DM parent → `chat.user.{account}.event.room` — one event per subscriber.
+- botDM / other parent types → no fan-out (the floor is always null).
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | string | Always `"thread_message_read"`. |
+| `roomId` | string | The **parent** room (for client routing/scoping). |
+| `threadRoomId` | string | The thread room whose floor advanced. |
+| `minUserLastSeenAt` | string | Optional. RFC3339 UTC timestamp of the new read floor. **Omitted** when the floor is null. |
+| `timestamp` | number | Epoch ms (UTC). Event publish time. |
+
+```json
+{
+  "type": "thread_message_read",
+  "roomId": "Rb3kQ2",
+  "threadRoomId": "Tx9aLm",
   "minUserLastSeenAt": "2026-06-09T10:30:00Z",
   "timestamp": 1749465000123
 }
@@ -683,6 +715,7 @@ and the actor is not the author. Not emitted for reaction removals.
 |---|---|---|
 | `type` | string | Always `"reaction"`. |
 | `roomId` | string | The room containing the reacted-to message. |
+| `roomType` | string | Room type: `"channel"`, `"dm"`, or `"botDM"`. |
 | `message` | [Message](../client-api.md#message-schema) | The full reacted-to message. |
 | `reactionDelta` | [ReactionDelta](#reactiondelta) | The single-reaction delta that triggered the notification. |
 | `timestamp` | number | Epoch ms (UTC). Event publish time. |
@@ -712,7 +745,7 @@ before the §7.6 batch query to avoid missing a transition.
 |---|---|---|
 | `account` | string | The user. |
 | `siteId` | string | The user's home site. |
-| `status` | string | Effective status: `"online"` / `"away"` / `"busy"` / `"offline"`. |
+| `status` | string | Effective status: `"online"` / `"away"` / `"busy"` / `"offline"` / `"in-call"`. `in-call` is set by an external Teams presence-sync signal (suppresses notifications; not settable as a manual status). |
 | `timestamp` | number | Millis since Unix epoch (UTC) of the change. |
 
 ```json
@@ -731,4 +764,4 @@ server-side presence state. Documented here for completeness; they emit no reply
 | `chat.user.{account}.event.presence.{siteID}.activity` | Report active/inactive flip. |
 | `chat.user.{account}.event.presence.{siteID}.bye` | Best-effort disconnect (beforeunload). |
 
-For payload details see [../client-api.md §7](../client-api.md#7-presence).
+For payload details see [../client-api.md §8](../client-api.md#8-presence).

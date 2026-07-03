@@ -1,6 +1,6 @@
 > Request/Reply and Events views of the chat client API — see also [client-api.md](../client-api.md).
 
-<!-- last synced: client-api.md @ 0d89e7f3 -->
+<!-- last synced: client-api.md @ 3cabb454 -->
 
 # Chat — Request/Reply Methods & Publish Operations
 
@@ -21,7 +21,10 @@ For connection, auth, shared schemas, and error reference, see [../client-api.md
    - [POST /auth](#post-auth)
    - [GET /api/userInfo](#get-apiuserinfo)
    - [POST /api/v1/rooms/:roomId/upload/images](#post-apiv1roomsroomiduploadimages)
-   - [GET /api/v1/rooms/:roomId/image/:fileId](#get-apiv1roomsroomidimagefileid)
+   - [POST /api/v1/rooms/:roomId/upload/file](#post-apiv1roomsroomiduploadfile)
+   - [GET /api/v1/rooms/:roomId/file/:fileId](#get-apiv1roomsroomidfilefileid)
+   - [GET /api/v1/file-upload/:fileId/:fileName](#get-apiv1file-uploadfileidfilename)
+   - [Media Service — avatar endpoints](#media-service--avatar-endpoints)
 2. [room-service (§3.1)](#room-service)
 3. [history-service (§3.2)](#history-service)
 4. [search-service (§3.3)](#search-service)
@@ -75,14 +78,61 @@ success/failure in one `200`. See
 
 ---
 
-### GET /api/v1/rooms/:roomId/image/:fileId
+### POST /api/v1/rooms/:roomId/upload/file
 
-**Endpoint:** `GET /api/v1/rooms/:roomId/image/:fileId`
-**Reply:** synchronous HTTP response (raw image bytes)
+**Endpoint:** `POST /api/v1/rooms/:roomId/upload/file`
+**Reply:** synchronous HTTP response
 
-Downloads a protected image. `ssoToken` header required; caller must be a room member.
-`drive_host` query param required. See
-[../client-api.md §2.4](../client-api.md#get-apiv1roomsroomidimagefileid).
+Uploads a single file (image/audio/video/document) and returns a render-ready
+[Attachment](../client-api.md#attachment) for the client to embed in a `msg.send`
+(§4) — pure HTTP, does **not** itself publish a message. `Content-Type:
+multipart/form-data`. `ssoToken` header required; caller must be a room member. See
+[../client-api.md §2.4](../client-api.md#post-apiv1roomsroomiduploadfile).
+
+**Emits:** `None — HTTP-only.`
+
+---
+
+### GET /api/v1/rooms/:roomId/file/:fileId
+
+**Endpoint:** `GET /api/v1/rooms/:roomId/file/:fileId`
+**Reply:** synchronous HTTP response (raw file bytes, any type)
+
+Downloads a protected file (image/audio/video/document). `ssoToken` header
+required; caller must be a room member. `drive_host` query param required.
+Called with the `relativePath` (image upload) or `titleLink` (file upload)
+returned by the upload endpoints. See
+[../client-api.md §2.4](../client-api.md#get-apiv1roomsroomidfilefileid).
+
+**Emits:** `None — HTTP-only.`
+
+---
+
+### GET /api/v1/file-upload/:fileId/:fileName
+
+**Endpoint:** `GET /api/v1/file-upload/:fileId/:fileName`
+**Reply:** synchronous HTTP response (raw file bytes, not JSON)
+
+Downloads a previously-uploaded file by `fileId` (resolved via the `uploads`
+collection, streamed from MinIO/S3); `fileName` is cosmetic. `ssoToken` header
+required; caller must be a member of the file's room. See
+[../client-api.md §2.4](../client-api.md#get-apiv1file-uploadfileidfilename).
+
+**Emits:** `None — HTTP-only.`
+
+---
+
+### Media Service — avatar endpoints
+
+Public HTTP endpoints served by `media-service` (no `ssoToken`/auth required).
+Full decision logic, redirect/caching rules, and the `PUT` upload contract are in
+[../client-api.md §7](../client-api.md#7-media-service).
+
+| Endpoint | Reply | Purpose |
+|---|---|---|
+| `GET /avatar/v1/:accountName` | synchronous HTTP (redirect, image bytes, or default SVG) | User/bot avatar; frontend also uses this for DM/botDM room avatars. |
+| `GET /avatar/v1/room/:roomID` | synchronous HTTP (image bytes or default SVG) | Channel/discussion room avatar. |
+| `PUT /avatar/v1/bot/:botName` | synchronous HTTP | Upload a bot's custom avatar. ⚠️ Unauthenticated in v1 — must be network-restricted. |
 
 **Emits:** `None — HTTP-only.`
 
@@ -131,30 +181,33 @@ Room type is inferred server-side from the payload shape (`name` set → channel
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `name` | string | channels | Channel name (≤ 100 chars). Required for channel; empty for DM/botDM. |
-| `users` | string[] | no | Internal user IDs or accounts to enroll. For a DM, exactly one entry. Bots are rejected in channels. |
+| `name` | string | channels | Channel name (≤ 100 chars). Required for channel; empty for DM/botDM/self-DM. |
+| `users` | string[] | no | Internal user IDs or accounts to enroll. For a DM, exactly one entry. For a **self-DM** (note-to-self), the caller themselves — required, an otherwise-empty request is rejected as empty. Bots are rejected in channels. |
 | `orgs` | string[] | no | `channel` only. Org IDs expanded server-side to all members. |
 | `channels` | [ChannelRef](../client-api.md#channelref)[] | no | `channel` only. Source channels whose members are copied in. |
+
+Room type is inferred: `name` set → channel; `name` empty + one `users` entry →
+DM/botDM; `name` empty + `users` is just the caller → **self-DM**, a
+single-member `dm` room, one-per-user.
 
 #### Success response
 
 | Field | Type | Notes |
 |---|---|---|
-| `status` | string | `"accepted"` (new room) or `"exists"` (DM already existed). |
-| `roomId` | string | The room ID. |
+| `status` | string | `"accepted"` (new room) or `"exists"` (DM/self-DM already existed). |
+| `roomId` | string | The room ID. Channel: 17-char base62. DM/botDM: sorted concat of the two internal user IDs. Self-DM: the requester's own user ID concatenated with itself. |
 | `roomType` | string | `"channel"`, `"dm"`, or `"botDM"`. |
 
 ```json
 { "status": "accepted", "roomId": "01970a4f8c2d7c9aQ", "roomType": "channel" }
 ```
 
-DM already exists: `{ "status": "exists", "roomId": "<existing room id>" }`
+DM/self-DM already exists: `{ "status": "exists", "roomId": "<existing room id>" }`
 
 #### Errors
 
 - `"X-Request-ID header is required"` (`bad_request`, `request_id_required`)
 - `"channel name is required"` / channel name > 100 chars
-- `"cannot create a DM with yourself"`
 - `"bots cannot be added to a channel"` / `"bot not available"`
 - `user "<account>": user not found` / `org "<orgId>": invalid org`
 - `"exceeds maximum capacity (N): would create M members"`
@@ -408,8 +461,10 @@ Synchronous RPC. Clears one thread's unread state for the caller.
 `"only room members can perform this action"`, `"thread subscription not found"`,
 `"threadId is required"`.
 
-**Emits:** None visible to clients. Cross-site users may observe a delayed cache update
-via the internal cross-site inbox flow.
+**Emits:** [`thread_message_read`](events.md#thread_message_read) (only when the thread's
+read floor `minUserLastSeenAt` changes; routed by the **parent** room's type) →
+[events.md](events.md). Cross-site users may additionally observe a delayed cache update
+via the internal cross-site inbox flow (not a client-visible event).
 
 ---
 
@@ -483,7 +538,10 @@ results.
 
 `"only room members can perform this action"`, `"message not found"`,
 `"message does not belong to this room"`, `"only the message sender can view read receipts"`,
-`"invalid request: messageId is required"`.
+`"invalid request: messageId is required"`, `"read receipts are temporarily unavailable"`
+(`unavailable`, `read_receipts_unavailable` — history service unreachable), `"message is
+outside access window"` (`forbidden`, `outside_access_window` — predates the requester's
+`historySharedSince`).
 
 **Emits:** None — reply only.
 
@@ -665,7 +723,9 @@ Get Thread, 50 for Load Surrounding; max 100) and `meta` (room time hints to ski
 lookup; `{ lastMsgAt, createdAt }`). See [../client-api.md §3.2](../client-api.md#32-history-service).
 
 **Common errors:** `forbidden` (`not subscribed to room`), `not_found` (`room/message not
-found`), `bad_request` (invalid pagination cursor), `internal`.
+found`), `bad_request` (invalid pagination cursor), `internal`. A reply that would exceed
+the transport's max payload returns `internal`/`response_too_large` instead of the success
+body (most likely with a high `limit`) — retry with a smaller `limit`.
 
 Message schema: see [../client-api.md § Message schema](../client-api.md#message-schema).
 
@@ -950,7 +1010,7 @@ state. Can always **remove** from a soft-deleted message; cannot **add** to one.
 | Field | Type | Notes |
 |---|---|---|
 | `messageId` | string | Required. |
-| `shortcode` | string | Required. Bare shortcode without colons (`acme_party`). Must match `^[a-z0-9_+-]{1,32}$` after NFC normalisation. Must be registered in `custom_emojis`. |
+| `shortcode` | string | Required. Bare shortcode without colons (`thumbsup`, `acme_party`). Must match `^[a-z0-9_+-]{1,32}$` after NFC normalisation. Accepts a built-in standard-emoji set (gemoji/GitHub-style) with no per-site setup, falling back to the site's `custom_emojis` collection. |
 
 #### Success response
 
@@ -963,8 +1023,9 @@ state. Can always **remove** from a soft-deleted message; cannot **add** to one.
 
 #### Errors
 
-`"messageId is required"`, `"shortcode is required"`, `"invalid reaction shortcode"`,
-`"message not found"`, `"not subscribed to room"`.
+`"messageId is required"`, `"shortcode is required"`, `"invalid reaction shortcode"`
+(malformed format), `"unknown reaction shortcode"` (well-formed but not a built-in or
+registered custom emoji), `"message not found"`, `"not subscribed to room"`.
 
 **Emits:** [`message_reacted`](events.md#message_reacted-reactroomevent) (channel `chat.room.{roomID}.event`; DM `chat.user.{account}.event.room` per non-bot member), [`notification`](events.md#notification--reaction-notification) (to message author on add only) → [events.md](events.md)
 
@@ -1169,6 +1230,8 @@ No client-facing events are emitted.
 | `chat.user.{account}.request.user.{siteID}.subscription.count` | [subscription.count](#subscriptioncount) |
 | `chat.user.{account}.request.user.{siteID}.subscription.setAppSubscription` | [subscription.setAppSubscription](#subscriptionsetappsubscription) |
 | `chat.user.{account}.request.user.{siteID}.apps.list` | [apps.list](#appslist) |
+| `chat.user.{account}.request.user.{siteID}.thread.list` | [List User Threads](#list-user-threads) |
+| `chat.user.{account}.request.user.{siteID}.thread.unread.summary` | [Get Thread Unread Summary](#get-thread-unread-summary) |
 
 ---
 
@@ -1241,15 +1304,17 @@ Returns the user's sidebar subscriptions. **Room-info-enriched** — see
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `type` | string | yes | `"current"` (active rooms), `"rooms"` (DM+channel), `"apps"` (botDM). |
-| `favorite` | boolean | no | Filter to favorited only. |
-| `updatedWithinDays` | number | no | `rooms`-type only. Non-negative. |
+| `favorite` | boolean | no | Filter to favorited only; also pins the self-DM first. |
+| `updatedWithinDays` | number | no | `rooms`-type only. Filters to rooms whose `lastMsgAt` is within N days. Non-negative. |
+| `offset` | integer | no | Zero-based index of first record. Negative ⇒ `0`. Default `0`. |
+| `limit` | integer | no | Page size. Omitted/≤0 ⇒ `SUBSCRIPTION_DEFAULT_LIMIT` (default `40`); capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`). |
 
 #### Success response
 
 | Field | Type | Notes |
 |---|---|---|
-| `subscriptions` | Subscription[] | Room-info-enriched, ordered by `lastMsgAt` desc. Capped at `MAX_SUBSCRIPTION_LIMIT` (default 1000). |
-| `total` | number | Count actually returned (= `subscriptions.length`). |
+| `subscriptions` | Subscription[] | One page of room-info-enriched records, ordered by `lastMsgAt` desc. |
+| `hasMore` | boolean | `true` when another page follows. Advance `offset` by your `limit` for the next page. |
 
 Per-room-type fields: channel rows add `name` (channel name); DM rows add `hrInfo`;
 botDM rows add `app` (AppSubscription). See
@@ -1272,10 +1337,12 @@ Exactly one of `membersContain` or `accountNames` must be set.
 |---|---|---|
 | `membersContain` | string | Return channels containing this single account. |
 | `accountNames` | string[] | Return channels where ALL accounts (+ caller) are members. Max 100. Bot accounts ignored. |
+| `offset` | integer | Zero-based index of first record. Negative ⇒ `0`. Default `0`. |
+| `limit` | integer | Page size. Omitted/≤0 ⇒ `SUBSCRIPTION_DEFAULT_LIMIT` (default `40`); capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`). |
 
 #### Success response
 
-Same shape as `subscription.list`.
+Same paginated shape as `subscription.list` — `{ "subscriptions": [...], "hasMore": <bool> }`.
 
 #### Errors
 
@@ -1385,8 +1452,65 @@ Returns a page of apps, each annotated with `isSubscribed`. Sorted by name.
 
 #### Success response
 
-`{ "apps": AppListItem[], "total": N }` where `AppListItem` is an `App` record plus
-`isSubscribed: boolean`. See [../client-api.md §3.4](../client-api.md#appslist).
+`{ "apps": AppListItem[], "hasMore": boolean }` where `AppListItem` is an `App` record
+plus `isSubscribed: boolean`, and `hasMore` signals another page follows (offset-based;
+advance `offset` by your `limit`). See [../client-api.md §3.4](../client-api.md#appslist).
+
+**Emits:** None.
+
+---
+
+### List User Threads
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.thread.list`
+
+`{siteID}` is the **caller's own home site**. Returns the user's thread subscriptions
+across **all** federation sites as one globally-ordered "thread inbox" (newest activity
+first) — `user-service` fans the query out per-site and merges the results.
+
+#### Request body
+
+| Field | Type | Notes |
+|---|---|---|
+| `cursor` | string | Optional. Opaque cursor from a previous `nextCursor`; omit for the first page. |
+| `limit` | number | Optional. Page size (default 20, max 100). |
+
+#### Success response
+
+`{ "items": ThreadListItem[], "nextCursor"?: string, "hasNext": boolean, "unavailableSites"?: string[] }`
+— see `ThreadListItem` schema in
+[../client-api.md §3.4](../client-api.md#list-user-threads). Sites that fail to respond
+are listed in `unavailableSites` rather than failing the request.
+
+#### Errors
+
+A malformed `cursor` returns `bad_request`.
+
+**Emits:** None.
+
+---
+
+### Get Thread Unread Summary
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.thread.unread.summary`
+
+`{siteID}` is the **caller's own home site**. Returns aggregated unread status across all
+of the user's thread subscriptions, site by site, merged into one response.
+
+#### Request body
+
+Empty object: `{}`.
+
+#### Success response
+
+`{ "unread": boolean, "unreadDirectMessage": boolean, "unreadMention": boolean,
+"lastMessageAt"?: number, "unavailableSites"?: string[] }` — see
+[../client-api.md §3.4](../client-api.md#get-thread-unread-summary). Per-site RPC
+failures degrade into `unavailableSites` rather than erroring.
+
+#### Errors
+
+`internal` — local thread-subscription read failed.
 
 **Emits:** None.
 
@@ -1411,11 +1535,12 @@ and quoted message; variant determined by optional fields.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | string | yes | 20-char base62 client-generated message ID. |
-| `content` | string | yes | Message body. Non-empty, ≤ 20 KiB. |
+| `content` | string | yes* | Message body, ≤ 20 KiB. *Required unless `attachments` is present. |
 | `requestId` | string | yes | 36-char hyphenated UUID (v4 or v7). Async reply delivered to `…response.{requestId}`. |
+| `attachments` | string[] | no | Optional. Each entry is base64-encoded JSON of one [Attachment](../client-api.md#attachment) from the upload endpoint. Max 1 entry, ≤ 8 KiB total; returned decoded as `Attachment[]` in message payloads. |
 | `threadParentMessageId` | string | no | Thread reply: the parent's message ID (20-char base62). |
 | `tshow` | boolean | no | "Also send to channel". Only meaningful on a thread reply; ignored on non-thread sends. |
-| `quotedParentMessageId` | string | no | Quoted message: the parent's message ID. Server fetches and embeds the snapshot. |
+| `quotedParentMessageId` | string | no | Quoted message: the parent's message ID. Server fetches and embeds the authoritative snapshot from message history. On a *transient* history outage the live copy gets a `"Content temporarily unavailable"` placeholder, re-projected to the authoritative snapshot (or dropped) before the durable write — the placeholder never persists. A genuinely missing/forbidden parent is still rejected. |
 
 #### Async success response
 
@@ -1431,7 +1556,6 @@ Delivered on `chat.user.{account}.response.{requestId}`.
 | `content` | string | Message body as sent. |
 | `createdAt` | string | RFC 3339. Server-assigned send time. |
 | `threadParentMessageId` | string | Present only for a thread reply. |
-| `threadParentMessageCreatedAt` | string | Present only for a thread reply. RFC 3339. |
 | `tshow` | boolean | Present only when `tshow: true` on a thread reply. |
 | `quotedParentMessage` | [QuotedParentMessage](../client-api.md#quotedparentmessage) | Present only for a quoted send. |
 
@@ -1478,7 +1602,7 @@ Call only when needed; back off after failure (permanently-gone keys won't reapp
 ### Presence publishes
 
 Client → server publishes (no reply). Payload and subject details in
-[../client-api.md §7](../client-api.md#7-presence).
+[../client-api.md §8](../client-api.md#8-presence).
 
 | Subject | Sent when |
 |---|---|
@@ -1491,5 +1615,5 @@ Presence request/reply methods:
 
 | Subject | Method |
 |---|---|
-| `chat.user.{account}.request.presence.{siteID}.manual.set` | [Set / clear manual override](../client-api.md#75-set--clear-manual-override-requestreply) |
-| `chat.user.presence.{siteID}.query.batch` | [Batch query initial presence state](../client-api.md#76-batch-query--initial-state-requestreply) |
+| `chat.user.{account}.request.presence.{siteID}.manual.set` | [Set / clear manual override](../client-api.md#85-set--clear-manual-override-requestreply) |
+| `chat.user.presence.{siteID}.query.batch` | [Batch query initial presence state](../client-api.md#86-batch-query--initial-state-requestreply) |
